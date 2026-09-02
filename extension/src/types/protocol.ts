@@ -1,4 +1,4 @@
-export type ConnectionMode = 'DEFAULT' | 'CUSTOM_IP' | 'P2P';
+export type ConnectionMode = 'DEFAULT' | 'CUSTOM_IP';
 
 export type CoViewEvent = 
   | 'CREATE_ROOM' 
@@ -9,9 +9,6 @@ export type CoViewEvent =
   | 'SYNC_STATE' 
   | 'REDIRECT_ROOM' 
   | 'TOGGLE_PERMISSION' 
-  | 'SIGNAL_OFFER'
-  | 'SIGNAL_ANSWER'
-  | 'SIGNAL_ICE_CANDIDATE'
   | 'ERROR';
 
 export interface SyncData {

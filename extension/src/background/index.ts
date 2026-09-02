@@ -187,12 +187,10 @@ function broadcastToVideoTabs(msg: any) {
 function parseShareCode(inputCode: string): { roomId: string; serverUrl: string } {
   let trimmed = inputCode.trim();
 
-  // 支援 IP: 或 DEF: 或 P2P: 前綴過濾
+  // 支援 IP: 或 DEF: 前綴過濾
   if (trimmed.startsWith('IP:')) {
     trimmed = trimmed.substring(3);
   } else if (trimmed.startsWith('DEF:')) {
-    trimmed = trimmed.substring(4);
-  } else if (trimmed.startsWith('P2P:')) {
     trimmed = trimmed.substring(4);
   }
 
@@ -243,8 +241,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             let compositeCode = `${res.roomId}|${base64Url}`;
             if (mode === 'CUSTOM_IP') {
               compositeCode = `IP:${res.roomId}|${base64Url}`;
-            } else if (mode === 'P2P') {
-              compositeCode = `P2P:${res.roomId}`;
             }
 
             currentRoomState = {

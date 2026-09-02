@@ -1,77 +1,70 @@
-# CoView (同映) - 跨平台網頁影片同步播放系統完整開發規格書 (v2.1)
+# CoView (同映) - 跨平台網頁影片同步播放系統完整開發規格書 (v2.2)
 
-> **環境與用途說明**：本文件專為 **Google Antigravity** 及 AI 開發助理設計。內含彈性三模連線架構（預設官方中繼 / 自架 IP / WebRTC P2P 點對點）、核心同步演算法、MV3 保活防禦、邊界條件、WebSocket 與 WebRTC 信令通訊協定（Type Definitions）以及未來預期功能規劃。請嚴格依據此規格書進行前後端程式碼生成與維護。
+> **環境與用途說明**：本文件專為 **Google Antigravity** 及 AI 開發助理設計。內含雙模彈性連線架構（預設官方中繼 / 自架 IP 模式）、核心同步演算法、MV3 保活防禦、邊界條件、WebSocket 通訊協定（Type Definitions）以及未來預期功能規劃（含 WebRTC P2P 直連、雲端硬碟滲透等）。請嚴格依據此規格書進行前後端程式碼生成與維護。
 
 ---
 
 ## 1. 專案概述與核心範疇
 
 ### 1.1 系統目標
-本專案旨在開發一款瀏覽器擴充套件（Chrome Extension V3），配合彈性連線機制（預設中繼、自架伺服器、點對點直連），實現跨地理位置、跨網頁、低延遲的網頁影片「即時同步播放」服務。
+本專案旨在開發一款瀏覽器擴充套件（Chrome Extension V3），配合彈性連線機制（預設中繼、自架伺服器），實現跨地理位置、跨網頁、低延遲的網頁影片「即時同步播放」服務。
 
 ### 1.2 支援目標網站（當前版本）
 1. **YouTube**：標準網頁版影片播放頁（處理 SPA 網頁架構與廣告過濾）。
 2. **Bilibili (嗶哩嗶哩)**：標準網頁版影片播放頁（處理動態載入 DOM）。
 
 > [!NOTE]
-> **雲端硬碟功能調整說明**：
-> 原規劃之「Google Drive 雲端硬碟內嵌影片同步播放」功能，因跨網域 Iframe 存取權限隔離與 Cookie 認證機制繁複，經架構評估後**已自當前核心功能移除，轉入第 10 章「未來預期功能規劃 (Roadmap)」**進行後續技術預研與階段性交付。
+> **功能範疇調整說明**：
+> 1. **WebRTC P2P 點對點連線**：經架構評估，現階段專注穩定 WebSocket 雙模架構（預設固定中繼與自架 IP），WebRTC 直連部分**已移入第 10 章「未來預期功能規劃」**作為後續擴充項目。
+> 2. **雲端硬碟**：Google Drive 內嵌影片同步功能同屬中長期規劃，詳見第 10 章。
 
 ---
 
 ## 2. 系統架構與技術棧 (Tech Stack)
 
 ### 2.1 整體系統拓撲架構
-系統支援「伺服器中繼（模式一/二）」與「點對點直連（模式三）」多元拓撲：
+系統現行版本支援「伺服器中繼（預設官方與自架 IP）」架構：
 
 ```text
-【模式 1 & 2：伺服器中繼模式 (Default & Self-Hosted IP)】
+【模式 1 & 2：伺服器中繼模式 (Default Relay & Self-Hosted IP)】
 [影片 DOM] <--> [Content Script] <--> [Background SW] <--> [WebSocket Server] <--> [其餘成員 Background SW]
-
-【模式 3：點對點直連模式 (Peer-to-Peer WebRTC)】
-[影片 DOM] <--> [Content Script] <--> [Background SW] <-- (輕量信令交換) --> [Signaling Server]
-                                          ↕ (WebRTC DataChannel 直接連線)
-                                      [房主/成員 Background SW]
 ```
 
 ### 2.2 前端套件 (Chrome Extension V3)
 * **核心框架**: React 18 + TypeScript + Vite
 * **編譯工具**: `@crxjs/vite-plugin` (支援 Extension MV3 的 HMR 熱重載與編譯)
 * **樣式庫**: Tailwind CSS
-* **通訊客戶端**: 
-  - `socket.io-client`：用於預設中繼、自架伺服器模式與 P2P 模式初期信令交換。
-  - **WebRTC API** (`RTCPeerConnection` + `RTCDataChannel`)：用於點對點直連傳輸。
+* **通訊客戶端**: `socket.io-client`（原生 WebSocket 傳輸通道直連）
 
 ### 2.3 後端伺服器 (Official & Self-Hosted Server)
 * **執行環境**: Node.js 20+ / TypeScript
-* **核心框架**: Express 或 Fastify
-* **雙重核心功能**:
+* **核心框架**: Express + Socket.IO
+* **核心功能**:
   1. **房間狀態中繼 (Room Relay)**：管理房間生命週期，進行心跳與播放指令廣播。
-  2. **信令交換中繼 (Signaling Relay)**：為 P2P 模式提供 SDP (Offer/Answer) 與 ICE Candidates 轉發服務。
+  2. **二重安全驗證**: 房主權限控制（未經授權之 Guest 指令直接 Drop）。
 * **狀態儲存**: 記憶體儲存 (Memory Object)，預留 Redis 介面供叢集化擴展。
 
 ---
 
-## 3. 連線方式三大模式規格 (Connection Modes)
+## 3. 連線方式核心模式規格 (Connection Modes)
 
-為兼顧「一般使用者易用性」、「自架玩家主權」與「去中心化超低延遲」三種需求，系統提供三種連線模式：
+系統提供兩種開箱即用與自架掌控之連線選項：
 
 ```text
 ┌────────────────────────────────────────────────────────────────────────┐
-│                        CoView 三大連線選項                             │
-├──────────────────┬──────────────────────┬──────────────────────────────┤
-│ 1. 預設連線模式  │ 2. 自行輸入 IP (自架) │ 3. 點對點連線 (P2P)          │
-│ (Default Relay)  │ (Self-Hosted IP)     │ (Peer-to-Peer DataChannel)   │
-├──────────────────┼──────────────────────┼──────────────────────────────┤
-│ 官方託管伺服器   │ 自建私有主機/VPS/NAS │ 瀏覽器直連，無伺服器轉發負擔 │
-│ 開箱即用免設定   │ 複合分享碼無感對接   │ WebRTC 極低延遲、高隱私      │
-└──────────────────┴──────────────────────┴──────────────────────────────┘
+│                        CoView 核心連線選項                             │
+├───────────────────────────────────┬────────────────────────────────────┤
+│ 1. 預設連線模式 (Default Relay)   │ 2. 自行輸入 IP (Self-Hosted IP)    │
+├───────────────────────────────────┼────────────────────────────────────┤
+│ 官方託管 / 本機開發伺服器         │ 自建私有主機 / VPS / NAS / LAN     │
+│ 開箱即用免設定                    │ 複合分享碼無感對接                 │
+└───────────────────────────────────┴────────────────────────────────────┘
 ```
 
 ### 3.1 選項一：預設連線模式 (Default Relay Mode)
 * **定位**：適合一般大眾使用者，開箱即用、零配置。
-* **連線端點**：套件預設連線至官方託管伺服器（預設環境變數：`VITE_DEFAULT_SERVER_URL`，如 `https://api.coview-official.com`）。
-* **傳輸機制**：傳統 WebSocket (Socket.IO) 集中式房間中繼轉發。
+* **連線端點**：套件預設連線至伺服器（本地端為 `http://localhost:3000`，生產環境為官方託管端點 `https://api.coview-official.com`）。
+* **傳輸機制**：WebSocket (Socket.IO) 集中式房間中繼轉發。
 * **房間代碼**：標準 6 碼代碼（如 `X7A9B2`）或含前綴之 `DEF:X7A9B2`。
 * **優點**：無需任何額外配置，即使處於嚴格 NAT 或行動網路皆可順暢連線。
 
@@ -84,30 +77,16 @@
      - *範例*：`IP:X7A9B2|aHR0cDovLzE5Mi4xNjguMS4xMDA6MzAwMA==`
   2. 觀眾在套件中貼入該分享碼時，Background Script 自動解析拆解該字串。
   3. 觀眾端套件自動將 WebSocket 連線位置動態切換至解碼後的自訂 IP，並直接發送加入房間請求，觀眾**完全不需要手動輸入 IP**。
-* **優點**：資料不經第三方主機、區域網路內低延遲、不受官方伺服器頻寬與維護限制。
+* **優點**：資料不經第三方主機、區域網路內極低延遲、不受官方伺服器頻寬與維護限制。
 
-### 3.3 選項三：點對點連線模式 (Peer-to-Peer / WebRTC DataChannel Mode)
-* **定位**：適合極度追求低延遲、伺服器零負載與高度隱私的觀影需求。
-* **傳輸機制**：瀏覽器與瀏覽器之間透過 **WebRTC DataChannel** (`ordered: true`, `maxRetransmits: 3`) 直接傳輸同步指令。
-* **房間拓撲架構 (Star Topology / Host-Centric)**：
-  - 房主作為 **Host Peer**，與進入房間的每一位 **Guest Peer** 建立一對一的 RTCDataChannel 通道。
-  - 房主的播放指令與心跳直接廣播給所有連接中的 Guests；授權的 Guest 進行操作時，先發給 Host，再由 Host 轉發給其他 Guests。
-* **信令交換流程 (Signaling Mechanism)**：
-  1. 雙方初期透過輕量信令服務（可借用預設伺服器之信令轉發端點）進行 SDP Offer / Answer 與 ICE Candidates 交換。
-  2. 當 WebRTC DataChannel 狀態變為 `open` 後，所有 `SYNC_STATE`、`HEARTBEAT` 事件改由 DataChannel 直接傳輸，中斷或脫離中央資料傳輸。
-* **NAT 穿透與連線回退 (STUN/TURN Fallback)**：
-  - 預設配置公共 STUN 伺服器清單（如 `stun:stun.l.google.com:19302`, `stun:stun1.l.google.com:19302`）。
-  - 若遇對稱型 NAT（Symmetric NAT）阻擋且無 TURN 中繼時（`iceConnectionState === 'failed'`），系統自動向使用者跳出提示，建議回退切換為「選項一：預設連線」或「選項二：自行輸入 IP」。
-* **分享代碼**：`P2P:RoomID`。
+### 3.3 兩種連線選項特性對比表
 
-### 3.4 三種連線選項特性對比表
-
-| 比較項目 | 1. 預設連線模式 | 2. 自行輸入 IP (自架) | 3. 點對點連線 (P2P) |
-| :--- | :--- | :--- | :--- |
-| **主機依賴** | 依賴官方伺服器 | 依賴使用者自建伺服器 | 僅初始化需輕量信令 |
-| **同步延遲** | 良好 (~50-150ms) | 極佳 (內網 ~5-20ms) | 極佳 (直連 ~20-60ms) |
-| **設定門檻** | ★☆☆☆☆ (零門檻) | ★★★☆☆ (需自架後端) | ★★☆☆☆ (一鍵直連) |
-| **伺服器頻寬消耗**| 高 (所有同步全中繼) | 由自架者承擔 | 極低 (僅信令握手) |
+| 比較項目 | 1. 預設連線模式 | 2. 自行輸入 IP (自架) |
+| :--- | :--- | :--- |
+| **主機依賴** | 依賴官方/本地伺服器 | 依賴使用者自建伺服器 |
+| **同步延遲** | 良好 (~50-150ms) | 極佳 (內網 ~5-20ms) |
+| **設定門檻** | ★☆☆☆☆ (零門檻) | ★★★☆☆ (需自架後端) |
+| **伺服器頻寬消耗**| 由官方/本地承擔 | 由自架者承擔 |
 | **跨網段穿透率** | 100% | 需開 Port 或同內網 | ~85% (視 NAT 形態而定) |
 | **隱私安全性** | 伺服器可知房間狀態 | 完全私有控制 | 端對端直連，高隱私 |
 
@@ -221,7 +200,7 @@ AI 在編寫 Content Script 時，請針對當前核心支援平台採用以下�
 
 ```typescript
 // 連線模式列舉
-export type ConnectionMode = 'DEFAULT' | 'CUSTOM_IP' | 'P2P';
+export type ConnectionMode = 'DEFAULT' | 'CUSTOM_IP';
 
 export type CoViewEvent = 
   | 'CREATE_ROOM' 
@@ -232,10 +211,6 @@ export type CoViewEvent =
   | 'SYNC_STATE' 
   | 'REDIRECT_ROOM' 
   | 'TOGGLE_PERMISSION' 
-  // P2P WebRTC 信令事件
-  | 'SIGNAL_OFFER'
-  | 'SIGNAL_ANSWER'
-  | 'SIGNAL_ICE_CANDIDATE'
   | 'ERROR';
 
 export interface CoViewPayload<T = any> {
@@ -261,7 +236,7 @@ export interface CreateRoomRes {
   roomId: string;
   data: {
     mode: ConnectionMode;
-    shareCode: string; // 預設 6 碼、自架複合碼或 P2P 代碼
+    shareCode: string; // 預設 6 碼或自架複合碼 (IP:RoomID|Base64)
     allowGuestControl: boolean;
   };
 }
@@ -282,18 +257,20 @@ export interface RequestCurrentStateMsg {
   roomId: string;
 }
 
-// 5. 狀態同步信號 (支援 WebSocket 與 WebRTC DataChannel)
+// 5. 狀態同步信號
 export interface SyncStateMsg {
   event: 'SYNC_STATE';
   roomId: string;
+  targetGuestSocketId?: string;
   data: {
     action: 'PLAY' | 'PAUSE' | 'SEEK' | 'HEARTBEAT';
     currentTime: number; // 影片秒數，精確到小數點後三位以上
+    paused?: boolean;    // 播放/暫停旗標
     timestamp: number;   // 發送端 Date.now()
   };
 }
 
-// 6. 強制網頁跳轉廣播 (Host -> Server/P2P -> Guest)
+// 6. 強制網頁跳轉廣播 (Host -> Server -> Guest)
 export interface RedirectRoomMsg {
   event: 'REDIRECT_ROOM';
   roomId: string;
@@ -310,37 +287,6 @@ export interface TogglePermissionMsg {
     allowGuestControl: boolean;
   };
 }
-
-// 8. WebRTC P2P 信令封包 (Signaling Payloads)
-export interface SignalOfferMsg {
-  event: 'SIGNAL_OFFER';
-  roomId: string;
-  data: {
-    targetUserId: string;
-    senderUserId: string;
-    sdp: RTCSessionDescriptionInit;
-  };
-}
-
-export interface SignalAnswerMsg {
-  event: 'SIGNAL_ANSWER';
-  roomId: string;
-  data: {
-    targetUserId: string;
-    senderUserId: string;
-    sdp: RTCSessionDescriptionInit;
-  };
-}
-
-export interface SignalIceCandidateMsg {
-  event: 'SIGNAL_ICE_CANDIDATE';
-  roomId: string;
-  data: {
-    targetUserId: string;
-    senderUserId: string;
-    candidate: RTCIceCandidateInit;
-  };
-}
 ```
 
 ---
@@ -349,8 +295,8 @@ export interface SignalIceCandidateMsg {
 
 AI 在編寫實作代碼時，請確認完全覆蓋以下異常邊界：
 * [x] **緩衝卡頓處理**：當某一觀影者觸發瀏覽器原生 `waiting` (Buffering) 事件並持續超過 5 秒時，向房間發送 `PAUSE`，避免成員進度嚴重落後，同時防止網路輕微波動造成過度頻繁暫停。
+* [x] **時間軸跳轉對齊**：主動 SEEK 事件除校準時間戳外，雙向同步發送端之 `paused` 狀態，避免跳轉後接收端定格暫停。
 * [ ] **廣告干擾隔離**：在 YouTube 等平台廣告播放期間，嚴格暫停發送與接收同步事件，避免廣告時長干擾正片進度。
-* [ ] **P2P 連線失敗降級**：WebRTC ICE 收集超時或連接中斷（Failed）時，提供友善提示並支援一鍵降級至預設或自架伺服器連線。
 * [ ] **斷線重連機制**：`socket.io` 實作指數型退避重連；重連成功後自動攜帶 Room ID 重新註冊。
 * [ ] **房主離線處理**：當 Host 斷線超過 30 秒未恢復，通知房間成員並依設定引導解散或升級首位 Guest 為新房主。
 
@@ -360,7 +306,32 @@ AI 在編寫實作代碼時，請確認完全覆蓋以下異常邊界：
 
 以下項目列為中長期預期功能，當前核心版本暫不實裝，但系統架構設計需保留介面以利平滑擴充：
 
-### 10.1 雲端硬碟同步播放 (Cloud Drive Integration)
+### 10.1 WebRTC 點對點直連模式 (Peer-to-Peer DataChannel Mode)
+* **需求背景**：適合極度追求低延遲、中央伺服器零負載與高度隱私的觀影需求。
+* **傳輸機制**：
+  - 瀏覽器與瀏覽器之間透過 **WebRTC DataChannel** (`ordered: true`, `maxRetransmits: 3`) 直接傳輸同步指令。
+  - 房主作為 **Host Peer**，與進入房間的每一位 **Guest Peer** 建立一對一的 RTCDataChannel 星狀拓撲通道。
+* **信令交換機制 (預留型別)**：
+  ```typescript
+  export interface SignalOfferMsg {
+    event: 'SIGNAL_OFFER';
+    roomId: string;
+    data: { targetUserId: string; senderUserId: string; sdp: RTCSessionDescriptionInit; };
+  }
+  export interface SignalAnswerMsg {
+    event: 'SIGNAL_ANSWER';
+    roomId: string;
+    data: { targetUserId: string; senderUserId: string; sdp: RTCSessionDescriptionInit; };
+  }
+  export interface SignalIceCandidateMsg {
+    event: 'SIGNAL_ICE_CANDIDATE';
+    roomId: string;
+    data: { targetUserId: string; senderUserId: string; candidate: RTCIceCandidateInit; };
+  }
+  ```
+* **NAT 穿透與回退策略**：配置公共 STUN 伺服器；遇對稱型 NAT 阻擋時自動回退至伺服器中繼模式。
+
+### 10.2 雲端硬碟同步播放 (Cloud Drive Integration)
 * **需求背景**：使用者期望與好友同步觀看儲存於雲端硬碟（Google Drive、OneDrive、Dropbox）上的私有影片。
 * **當前技術痛點與移出原因**：
   1. **跨網域 Iframe 存取限制**：Google Drive 預覽介面中的 `<video>` 標籤深嵌於跨網域 Iframe（如 `docs.google.com`），受同源政策（SOP）阻擋，Content Script 注入與事件監聽難度高。
@@ -369,11 +340,11 @@ AI 在編寫實作代碼時，請確認完全覆蓋以下異常邊界：
   - **階段一**：開發專屬 Google Drive API 授權代理，直接獲取影片串流直連網址（Direct Streaming URL）。
   - **階段二**：藉由套件背景權限與 `postMessage` 建立跨 Iframe 通訊管道，並重構白名單規則（`drive.google.com`, `docs.google.com`）。
 
-### 10.2 本地檔案 P2P 同步播放 (Local Video Streaming / WebTorrent)
+### 10.3 本地檔案 P2P 同步播放 (Local Video Streaming / WebTorrent)
 * 允許房主選取電腦本地影片檔案（`.mp4`, `.mkv`），利用 WebRTC DataChannel 分塊傳輸（Chunking）或 WebTorrent 技術，免上傳雲端直接點對點同步串流至觀眾瀏覽器播放。
 
-### 10.3 房間即時語音通話 (WebRTC Voice Chat)
+### 10.4 房間即時語音通話 (WebRTC Voice Chat)
 * 在既有的 WebRTC 通道上附加音訊軌（Audio Track），讓同房間好友在觀影過程中進行超低延遲語音對話，免切換第三方語音軟體。
 
-### 10.4 更多主流影音串流平台支援
+### 10.5 更多主流影音串流平台支援
 * 逐步適配 Netflix、Disney+、巴哈姆特動畫瘋等平台，針對各平台動態 DOM、DRM 加密播放器與按鈕做專屬防禦適配。

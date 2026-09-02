@@ -274,7 +274,7 @@ export default function Popup() {
                       <Server className="w-3.5 h-3.5 text-blue-400" />
                       連線方式 (Connection Mode)
                     </span>
-                    <span className="text-[10px] text-blue-400 font-normal">三種選項</span>
+                    <span className="text-[10px] text-blue-400 font-normal">兩種選項</span>
                   </label>
 
                   <div className="relative">
@@ -287,7 +287,6 @@ export default function Popup() {
                         1. 預設固定伺服器 ({IS_LOCAL_DEV ? 'Local 本地主機' : '官方雲端'})
                       </option>
                       <option value="CUSTOM_IP">2. 自行輸入 IP (用於自架主機 / LAN)</option>
-                      <option value="P2P">3. 點對點連線 (WebRTC P2P 直連)</option>
                     </select>
                     <ChevronDown className="w-4 h-4 text-slate-400 absolute right-2.5 top-2.5 pointer-events-none" />
                   </div>
@@ -320,18 +319,6 @@ export default function Popup() {
                     />
                     <p className="text-[10px] text-slate-400">
                       建房後將生成複合分享碼，訪客直接貼入即可自動切換至該 IP 連線。
-                    </p>
-                  </div>
-                )}
-
-                {connectionMode === 'P2P' && (
-                  <div className="p-2.5 bg-slate-950/70 border border-indigo-900/40 rounded-lg space-y-1">
-                    <div className="flex items-center gap-1 text-[11px] text-indigo-300 font-medium">
-                      <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
-                      WebRTC DataChannel 瀏覽器直連
-                    </div>
-                    <p className="text-[10px] text-slate-400">
-                      同步信號不經伺服器轉發，提供極低延遲與高隱私觀影體驗。
                     </p>
                   </div>
                 )}
@@ -374,7 +361,7 @@ export default function Popup() {
                     className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition font-mono"
                   />
                   <p className="text-[10px] text-slate-400 mt-1">
-                    支援一般 6 碼、自架複合碼 (IP:...) 或 P2P 碼，貼上後自動解析端點。
+                    支援一般 6 碼或自架複合碼 (IP:...)，貼上後自動解析端點。
                   </p>
                 </div>
 
