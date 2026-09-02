@@ -1,0 +1,373 @@
+import { SyncData } from '../types/protocol';
+
+console.log('[CoView ContentScript] 腳本已載入 (Frame:', window.self === window.top ? 'Main Window' : 'Iframe', ')');
+
+// ----------------------------------------------------
+// 1. MV3 長連接 Port 保活
+// ----------------------------------------------------
+let keepAlivePort: chrome.runtime.Port | null = null;
+try {
+  keepAlivePort = chrome.runtime.connect({ name: 'coview-keepalive' });
+  keepAlivePort.onDisconnect.addListener(() => {
+    console.log('[CoView ContentScript] Keep-Alive Port 斷開，試圖重新連線...');
+  });
+} catch (e) {
+  console.warn('[CoView] 建立 Keep-Alive Port 失敗:', e);
+}
+
+// ----------------------------------------------------
+// 2. 全域狀態變數
+// ----------------------------------------------------
+let targetVideo: HTMLVideoElement | null = null;
+let programmaticUntilTimestamp = 0;
+let roomState: { isHost: boolean; allowGuestControl: boolean } = {
+  isHost: true,
+  allowGuestControl: false
+};
+let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+let bufferingTimer: ReturnType<typeof setTimeout> | null = null;
+let seekDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+let isUserSeeking = false;
+let wasPlayingBeforeSeek = false;
+
+function markProgrammatic(durationMs = 800) {
+  programmaticUntilTimestamp = Date.now() + durationMs;
+}
+
+function isProgrammatic(): boolean {
+  return Date.now() < programmaticUntilTimestamp;
+}
+
+// ----------------------------------------------------
+// 3. 跨平台 Video 選擇器與動態捕捉
+// ----------------------------------------------------
+function findVideoElement(): HTMLVideoElement | null {
+  const host = window.location.hostname;
+
+  if (host.includes('youtube.com')) {
+    return document.querySelector('video.html5-main-video') as HTMLVideoElement;
+  } else if (host.includes('bilibili.com')) {
+    return document.querySelector('.bpx-player-video-wrap video') || document.querySelector('video') as HTMLVideoElement;
+  } else if (host.includes('google.com')) {
+    return document.querySelector('video.video-stream') || document.querySelector('video') as HTMLVideoElement;
+  }
+  return document.querySelector('video') as HTMLVideoElement;
+}
+
+// YouTube SPA 導航與廣告偵測
+function isYouTubeAdPlaying(): boolean {
+  if (!window.location.hostname.includes('youtube.com')) return false;
+  const adOverlay = document.querySelector('.video-ads') || document.querySelector('.ytp-ad-player-overlay');
+  return !!adOverlay && (adOverlay as HTMLElement).offsetWidth > 0;
+}
+
+// ----------------------------------------------------
+// 4. 定時心跳 (Host 端 3 秒發送一次)
+// ----------------------------------------------------
+function startHeartbeat() {
+  stopHeartbeat();
+  heartbeatTimer = setInterval(() => {
+    if (!targetVideo || !roomState.isHost) return;
+    if (isYouTubeAdPlaying()) return;
+
+    chrome.runtime.sendMessage({
+      type: 'BG_SYNC_STATE',
+      data: {
+        action: 'HEARTBEAT',
+        currentTime: targetVideo.currentTime,
+        paused: targetVideo.paused,
+        timestamp: Date.now()
+      }
+    });
+  }, 3000);
+}
+
+function stopHeartbeat() {
+  if (heartbeatTimer) {
+    clearInterval(heartbeatTimer);
+    heartbeatTimer = null;
+  }
+}
+
+// ----------------------------------------------------
+// 5. 5 秒容差與單程延遲補償演算法 (規格 4.2)
+// ----------------------------------------------------
+function applySyncState(data: SyncData) {
+  if (!targetVideo) return;
+  if (isYouTubeAdPlaying()) {
+    console.log('[CoView] 廣告播放中，忽略同步事件');
+    return;
+  }
+
+  const { action, currentTime: serverSentTime, timestamp: clientSentTimestamp, paused: serverPaused } = data;
+  const clientReceiveTimestamp = Date.now();
+
+  // 計算單程延遲 (毫秒轉秒)
+  const networkLatency = Math.max(0, (clientReceiveTimestamp - clientSentTimestamp) / 2 / 1000);
+  const isTargetPaused = action === 'PAUSE' || (action === 'HEARTBEAT' && serverPaused);
+  const targetServerTime = serverSentTime + (isTargetPaused ? 0 : networkLatency);
+  const localTime = targetVideo.currentTime;
+  const timeDiff = Math.abs(localTime - targetServerTime);
+
+  // 標記接下來的 1000ms 為腳本同步操作，防止事件回彈與循環觸發
+  markProgrammatic(1000);
+
+  if (action === 'PLAY') {
+    // 只有在時間差大於 0.5 秒或處於不同播放狀態時校準進度，避免極小誤差造成重複 Seek
+    if (timeDiff > 0.5) {
+      targetVideo.currentTime = targetServerTime;
+    }
+    if (targetVideo.paused) {
+      targetVideo.play().catch((err) => console.log('[CoView Play Intercepted]:', err));
+    }
+  } else if (action === 'PAUSE') {
+    // 暫停時若時間差距小於 0.5 秒直接 pause，不強制 seek，消除播放器暫停時的畫面閃爍與誤判卡頓
+    if (timeDiff > 0.5) {
+      targetVideo.currentTime = targetServerTime;
+    }
+    targetVideo.pause();
+  } else if (action === 'SEEK') {
+    // 主動 Seek 事件無視容差，強制作業更新時間軸
+    targetVideo.currentTime = targetServerTime;
+
+    // 同步發送端的播放狀態：若發送端在播放，全員跟隨播放；若發送端在暫停，全員跟隨暫停
+    if (serverPaused === false) {
+      console.log('[CoView Seek] 發送端正在播放，接收端跟隨同步播放');
+      targetVideo.play().catch((err) => console.log('[CoView Seek Play Intercepted]:', err));
+    } else if (serverPaused === true) {
+      console.log('[CoView Seek] 發送端處於暫停，接收端跟隨暫停');
+      targetVideo.pause();
+    }
+  } else if (action === 'HEARTBEAT') {
+    // 1. 雙向校準播放狀態
+    if (typeof serverPaused === 'boolean') {
+      if (serverPaused && !targetVideo.paused) {
+        console.log('[CoView Heartbeat] 主機目前為暫停，觀眾對齊暫停');
+        targetVideo.pause();
+      } else if (!serverPaused && targetVideo.paused) {
+        console.log('[CoView Heartbeat] 主機目前為播放，觀眾對齊播放');
+        targetVideo.play().catch(() => {});
+      }
+    }
+
+    // 2. 被動心跳 5 秒容差檢查 (在暫停或非必要狀態下不隨意位移)
+    if (timeDiff > 5) {
+      console.log(`[CoView Heartbeat] 時間差為 ${timeDiff.toFixed(2)} 秒 (>5秒)，強制同步位移至: ${targetServerTime}`);
+      targetVideo.currentTime = targetServerTime;
+    }
+  }
+}
+
+// ----------------------------------------------------
+// 6. 綁定 Video DOM 事件監聽
+// ----------------------------------------------------
+function attachVideoListeners(video: HTMLVideoElement) {
+  if ((video as any).__coview_attached) return;
+  (video as any).__coview_attached = true;
+  targetVideo = video;
+
+  console.log('[CoView] 成功綁定 Target Video DOM');
+
+  video.addEventListener('play', () => {
+    if (isProgrammatic() || isYouTubeAdPlaying()) return;
+
+    if (!roomState.isHost && !roomState.allowGuestControl) {
+      console.warn('[CoView Intercept] 觀眾無權限發起播放，回滾狀態');
+      markProgrammatic(400);
+      video.pause();
+      return;
+    }
+
+    chrome.runtime.sendMessage({
+      type: 'BG_SYNC_STATE',
+      data: {
+        action: 'PLAY',
+        currentTime: video.currentTime,
+        paused: false,
+        timestamp: Date.now()
+      }
+    });
+  });
+
+  video.addEventListener('pause', () => {
+    if (isProgrammatic() || isYouTubeAdPlaying()) return;
+
+    if (!roomState.isHost && !roomState.allowGuestControl) {
+      console.warn('[CoView Intercept] 觀眾無權限發起暫停，回滾狀態');
+      markProgrammatic(400);
+      video.play().catch(() => {});
+      return;
+    }
+
+    chrome.runtime.sendMessage({
+      type: 'BG_SYNC_STATE',
+      data: {
+        action: 'PAUSE',
+        currentTime: video.currentTime,
+        paused: true,
+        timestamp: Date.now()
+      }
+    });
+  });
+
+  function broadcastSeek() {
+    if (!targetVideo) return;
+    // 若跳轉前處於播放狀態，或當前已開播，則目標狀態認定為播放中 (paused: false)
+    const isPaused = targetVideo.paused && !wasPlayingBeforeSeek;
+
+    chrome.runtime.sendMessage({
+      type: 'BG_SYNC_STATE',
+      data: {
+        action: 'SEEK',
+        currentTime: targetVideo.currentTime,
+        paused: isPaused,
+        timestamp: Date.now()
+      }
+    });
+  }
+
+  video.addEventListener('seeking', () => {
+    if (isProgrammatic() || isYouTubeAdPlaying()) return;
+    if (!roomState.isHost && !roomState.allowGuestControl) return;
+
+    if (!isUserSeeking) {
+      isUserSeeking = true;
+      wasPlayingBeforeSeek = !video.paused;
+    }
+
+    if (seekDebounceTimer) clearTimeout(seekDebounceTimer);
+    seekDebounceTimer = setTimeout(() => {
+      broadcastSeek();
+    }, 150);
+  });
+
+  video.addEventListener('seeked', () => {
+    if (isProgrammatic() || isYouTubeAdPlaying()) return;
+    if (!roomState.isHost && !roomState.allowGuestControl) return;
+
+    if (seekDebounceTimer) clearTimeout(seekDebounceTimer);
+    setTimeout(() => {
+      broadcastSeek();
+      isUserSeeking = false;
+    }, 50);
+  });
+
+  // 規格 9: 緩衝卡頓處理 (waiting) - 5 秒防抖，避免網路輕微波動造成過度頻繁暫停
+  video.addEventListener('waiting', () => {
+    if (isProgrammatic() || isYouTubeAdPlaying() || video.paused) return;
+    if (!roomState.isHost && !roomState.allowGuestControl) return;
+
+    // 只有在真正卡頓持續超過 5 秒時才廣播暫停
+    if (bufferingTimer) clearTimeout(bufferingTimer);
+    bufferingTimer = setTimeout(() => {
+      if (!video.paused && !isProgrammatic()) {
+        console.log('[CoView] 偵測到嚴重網路卡頓 (>5s)，廣播全房暫停');
+        chrome.runtime.sendMessage({
+          type: 'BG_SYNC_STATE',
+          data: {
+            action: 'PAUSE',
+            currentTime: video.currentTime,
+            paused: true,
+            timestamp: Date.now()
+          }
+        });
+      }
+    }, 5000);
+  });
+
+  video.addEventListener('playing', () => {
+    if (bufferingTimer) {
+      clearTimeout(bufferingTimer);
+      bufferingTimer = null;
+    }
+  });
+
+  video.addEventListener('canplay', () => {
+    if (bufferingTimer) {
+      clearTimeout(bufferingTimer);
+      bufferingTimer = null;
+    }
+  });
+}
+
+// ----------------------------------------------------
+// 7. MutationObserver 與初始化
+// ----------------------------------------------------
+function initObserver() {
+  const v = findVideoElement();
+  if (v) {
+    attachVideoListeners(v);
+  }
+
+  const observer = new MutationObserver(() => {
+    const video = findVideoElement();
+    if (video && video !== targetVideo) {
+      attachVideoListeners(video);
+    }
+  });
+
+  observer.observe(document.body, { childList: true, subtree: true });
+}
+
+// YouTube SPA 切換影片事件
+window.addEventListener('yt-navigate-finish', () => {
+  console.log('[CoView] 偵測到 YouTube SPA 網頁導航切換');
+  setTimeout(initObserver, 1000);
+});
+
+// 向 Background 獲取最新狀態
+chrome.runtime.sendMessage({ type: 'GET_ROOM_STATE' }, (res) => {
+  if (res?.roomState) {
+    roomState = res.roomState;
+    if (roomState.isHost) {
+      startHeartbeat();
+    }
+  }
+});
+
+// 監聽來自 Background 的動態訊息
+chrome.runtime.onMessage.addListener((request) => {
+  const { type, payload } = request;
+
+  if (type === 'CS_SYNC_RECEIVED') {
+    applySyncState(payload.data);
+  } else if (type === 'CS_ROOM_STATE_CHANGED') {
+    if (payload) {
+      roomState = {
+        isHost: payload.isHost,
+        allowGuestControl: payload.allowGuestControl
+      };
+      console.log('[CoView] 房間狀態即時更新:', roomState);
+      if (roomState.isHost) {
+        startHeartbeat();
+      } else {
+        stopHeartbeat();
+      }
+    } else {
+      roomState = { isHost: false, allowGuestControl: false };
+      stopHeartbeat();
+      console.log('[CoView] 已退出房間，停止心跳');
+    }
+  } else if (type === 'CS_REQUEST_CURRENT_STATE') {
+    // 規格 4.1 Host 被要求回報狀態給新進人員
+    if (targetVideo && roomState.isHost) {
+      console.log('[CoView Host] 回報最新影片狀態給新進成員 Socket:', payload.targetGuestSocketId);
+      chrome.runtime.sendMessage({
+        type: 'BG_SYNC_STATE',
+        targetGuestSocketId: payload.targetGuestSocketId,
+        data: {
+          action: targetVideo.paused ? 'PAUSE' : 'PLAY',
+          currentTime: targetVideo.currentTime,
+          timestamp: Date.now()
+        }
+      });
+    }
+  } else if (type === 'CS_PERMISSION_UPDATED') {
+    roomState.allowGuestControl = payload.allowGuestControl;
+    console.log('[CoView] 觀眾權限狀態更新:', roomState.allowGuestControl);
+  } else if (type === 'SHOW_SECURITY_ALERT') {
+    alert(`【CoView 安全警告】房主嘗試將您導向未授權的網址 (${payload.url})，系統已自動攔截！`);
+  }
+});
+
+initObserver();
