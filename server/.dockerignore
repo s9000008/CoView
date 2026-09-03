@@ -1,0 +1,48 @@
+# ==============================================================================
+# CoView Server - Docker Build Ignore List
+# 嚴格杜絕敏感金鑰、本機環境變數、快取與原始相依性進入 Docker 映像檔
+# ==============================================================================
+
+# 版本控制
+.git/
+.gitignore
+.gitattributes
+
+# 相依套件與快取（由 Dockerfile npm ci 統一建構）
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.npm/
+
+# 建置產物
+dist/
+build/
+
+# 敏感環境變數與私鑰憑證（最核心：防止任何本機機密被包入 Image）
+.env
+.env*
+*.local
+*.pem
+*.key
+*.cert
+*.crt
+*.pfx
+
+# 暫存與記錄檔
+*.log
+logs/
+.temp/
+.cache/
+
+# 開發工具與編輯器暫存
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# 說明文件與配置檔（映像檔不需要）
+README.md
+Dockerfile
+.dockerignore
+fly.toml

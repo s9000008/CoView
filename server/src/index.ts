@@ -267,3 +267,33 @@ server.listen(PORT, () => {
   console.log(`🚀 CoView WebSocket Server 啟動於 http://localhost:${PORT}`);
   console.log(`================================================`);
 });
+
+// ----------------------------------------------------
+// 優雅停機 (Graceful Shutdown) 信號監聽 (適配 Docker / Fly.io 容器生命週期)
+// ----------------------------------------------------
+function handleGracefulShutdown(signal: string) {
+  console.log(`\n🛑 收到 ${signal} 訊號，開始執行優雅停機流程 (Graceful Shutdown)...`);
+
+  // 1. 廣播停機通知給全體在線 Socket 客戶端
+  io.emit('SERVER_SHUTDOWN', { message: '伺服器正在進行更新維護，連線將短暫中斷' });
+
+  // 2. 停止接受新的 HTTP / WebSocket 連線
+  server.close(() => {
+    console.log('✅ HTTP 伺服器已停止接收新連線');
+
+    // 3. 安全關閉所有 Socket.IO 連線
+    io.close(() => {
+      console.log('✅ 所有 WebSocket 長連線已完全關閉');
+      process.exit(0);
+    });
+  });
+
+  // 4. 設定 8 秒超時強制退出，避免程序阻塞無響應
+  setTimeout(() => {
+    console.error('⚠️ 優雅停機超時 (8s)，強制終止程序');
+    process.exit(1);
+  }, 8000).unref();
+}
+
+process.on('SIGTERM', () => handleGracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => handleGracefulShutdown('SIGINT'));

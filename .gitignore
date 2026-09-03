@@ -9,11 +9,25 @@ build/
 *.rar
 *.7z
 *.tar.gz
+*.crx
 
-# Environment variables
+# Environment variables & Secrets (嚴格防洩)
 .env
-.env.local
-.env.production
+.env.*
+.env*.local
+!.env.example
+
+# SSL Certificates, Keys & Credentials
+*.pem
+*.key
+*.cert
+*.crt
+*.pfx
+*.p12
+*.asc
+id_rsa*
+id_ed25519*
+secrets/
 
 # Logs
 *.log
