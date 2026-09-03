@@ -117,3 +117,42 @@ export interface ExtensionMessage {
     | 'OFFSCREEN_SERVERLESS_ACCEPT_ANSWER';
   payload?: any;
 }
+
+/**
+ * 解析影片唯一標識 (Video Identifier)
+ * YouTube: 提取 v 參數 (如: yt:dQw4w9WgXcQ)
+ * Bilibili: 提取 BV 號 (如: bili:BV1xx411c7mD)
+ */
+export function getVideoIdentifier(rawUrl?: string): string | null {
+  if (!rawUrl) return null;
+  try {
+    const url = new URL(rawUrl);
+
+    // 1. YouTube 影片辨識
+    if (url.hostname.includes('youtube.com')) {
+      const v = url.searchParams.get('v');
+      if (v) return `yt:${v}`;
+      if (url.pathname.startsWith('/embed/')) {
+        const id = url.pathname.split('/')[2];
+        if (id) return `yt:${id}`;
+      }
+    }
+    if (url.hostname.includes('youtu.be')) {
+      const id = url.pathname.slice(1).split('?')[0];
+      if (id) return `yt:${id}`;
+    }
+
+    // 2. Bilibili 影片辨識
+    if (url.hostname.includes('bilibili.com')) {
+      const match = url.pathname.match(/\/(BV[a-zA-Z0-9]+)/i);
+      if (match && match[1]) {
+        return `bili:${match[1]}`;
+      }
+    }
+
+    // 其它網址以去除 query/hash 之 pathname 為識別
+    return `${url.origin}${url.pathname}`;
+  } catch (e) {
+    return null;
+  }
+}

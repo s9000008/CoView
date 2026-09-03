@@ -1,4 +1,4 @@
-import { SyncData } from '../types/protocol';
+import { SyncData, getVideoIdentifier } from '../types/protocol';
 
 console.log('[CoView ContentScript] 腳本已載入 (Frame:', window.self === window.top ? 'Main Window' : 'Iframe', ')');
 
@@ -20,7 +20,12 @@ try {
 // ----------------------------------------------------
 let targetVideo: HTMLVideoElement | null = null;
 let programmaticUntilTimestamp = 0;
-let roomState: { isInRoom: boolean; isHost: boolean; allowGuestControl: boolean } = {
+let roomState: {
+  isInRoom: boolean;
+  isHost: boolean;
+  allowGuestControl: boolean;
+  currentUrl?: string;
+} = {
   isInRoom: false,
   isHost: false,
   allowGuestControl: false
@@ -37,6 +42,21 @@ function markProgrammatic(durationMs = 800) {
 
 function isProgrammatic(): boolean {
   return Date.now() < programmaticUntilTimestamp;
+}
+
+/**
+ * 核心防線：檢查當前分頁影片是否為房間目前指定播放的影片
+ * 若房主另開新分頁播放新影片，舊分頁將判定為 false，立即靜音心跳與事件
+ */
+function isCurrentActiveVideoTab(): boolean {
+  if (!roomState.isInRoom) return false;
+  // 若房間未指定 currentUrl，暫不限制
+  if (!roomState.currentUrl) return true;
+
+  const myId = getVideoIdentifier(window.location.href);
+  const roomId = getVideoIdentifier(roomState.currentUrl);
+  if (!myId || !roomId) return true;
+  return myId === roomId;
 }
 
 // ----------------------------------------------------
@@ -69,6 +89,14 @@ function startHeartbeat() {
   stopHeartbeat();
   heartbeatTimer = setInterval(() => {
     if (!targetVideo || !roomState.isInRoom || !roomState.isHost) return;
+
+    // 核心防護：若本分頁已非房間當前影片，自我靜音並停止心跳，徹底根絕時間軸干擾
+    if (!isCurrentActiveVideoTab()) {
+      console.log('[CoView Heartbeat] 偵測到本分頁影片已過期 (非當前房間目標影片)，自動靜音心跳');
+      stopHeartbeat();
+      return;
+    }
+
     if (isYouTubeAdPlaying()) return;
 
     chrome.runtime.sendMessage({
@@ -95,6 +123,12 @@ function stopHeartbeat() {
 // ----------------------------------------------------
 function applySyncState(data: SyncData) {
   if (!targetVideo || !roomState.isInRoom) return;
+  // 觀眾端防護：若自身尚未處於目標影片，不套用時間軸校準，避免分頁未跳轉前時間跳動
+  if (!isCurrentActiveVideoTab()) {
+    console.log('[CoView] 當前分頁影片與房間目標不符，略過時間軸同步');
+    return;
+  }
+
   if (isYouTubeAdPlaying()) {
     console.log('[CoView] 廣告播放中，忽略同步事件');
     return;
@@ -172,6 +206,8 @@ function attachVideoListeners(video: HTMLVideoElement) {
   video.addEventListener('play', () => {
     // 未在房間內，徹底放行使用者原生播放！
     if (!roomState.isInRoom) return;
+    // 舊分頁或非當前影片，不外發同步事件
+    if (!isCurrentActiveVideoTab()) return;
     if (isProgrammatic() || isYouTubeAdPlaying()) return;
 
     if (!roomState.isHost && !roomState.allowGuestControl) {
@@ -195,6 +231,8 @@ function attachVideoListeners(video: HTMLVideoElement) {
   video.addEventListener('pause', () => {
     // 未在房間內，徹底放行使用者原生暫停！
     if (!roomState.isInRoom) return;
+    // 舊分頁或非當前影片，不外發同步事件
+    if (!isCurrentActiveVideoTab()) return;
     if (isProgrammatic() || isYouTubeAdPlaying()) return;
 
     if (!roomState.isHost && !roomState.allowGuestControl) {
@@ -217,6 +255,8 @@ function attachVideoListeners(video: HTMLVideoElement) {
 
   function broadcastSeek() {
     if (!targetVideo || !roomState.isInRoom) return;
+    if (!isCurrentActiveVideoTab()) return;
+
     // 若跳轉前處於播放狀態，或當前已開播，則目標狀態認定為播放中 (paused: false)
     const isPaused = targetVideo.paused && !wasPlayingBeforeSeek;
 
@@ -233,6 +273,7 @@ function attachVideoListeners(video: HTMLVideoElement) {
 
   video.addEventListener('seeking', () => {
     if (!roomState.isInRoom) return;
+    if (!isCurrentActiveVideoTab()) return;
     if (isProgrammatic() || isYouTubeAdPlaying()) return;
     if (!roomState.isHost && !roomState.allowGuestControl) return;
 
@@ -249,6 +290,7 @@ function attachVideoListeners(video: HTMLVideoElement) {
 
   video.addEventListener('seeked', () => {
     if (!roomState.isInRoom) return;
+    if (!isCurrentActiveVideoTab()) return;
     if (isProgrammatic() || isYouTubeAdPlaying()) return;
     if (!roomState.isHost && !roomState.allowGuestControl) return;
 
@@ -262,6 +304,7 @@ function attachVideoListeners(video: HTMLVideoElement) {
   // 規格 9: 緩衝卡頓處理 (waiting) - 5 秒防抖，避免網路輕微波動造成過度頻繁暫停
   video.addEventListener('waiting', () => {
     if (!roomState.isInRoom) return;
+    if (!isCurrentActiveVideoTab()) return;
     if (isProgrammatic() || isYouTubeAdPlaying() || video.paused) return;
     if (!roomState.isHost && !roomState.allowGuestControl) return;
 
@@ -320,7 +363,16 @@ function initObserver() {
 // YouTube SPA 切換影片事件
 window.addEventListener('yt-navigate-finish', () => {
   console.log('[CoView] 偵測到 YouTube SPA 網頁導航切換');
-  setTimeout(initObserver, 1000);
+  setTimeout(() => {
+    initObserver();
+    if (roomState.isInRoom && roomState.isHost) {
+      if (isCurrentActiveVideoTab()) {
+        startHeartbeat();
+      } else {
+        stopHeartbeat();
+      }
+    }
+  }, 1000);
 });
 
 // 向 Background 獲取最新狀態
@@ -329,10 +381,13 @@ chrome.runtime.sendMessage({ type: 'GET_ROOM_STATE' }, (res) => {
     roomState = {
       isInRoom: true,
       isHost: res.roomState.isHost,
-      allowGuestControl: res.roomState.allowGuestControl
+      allowGuestControl: res.roomState.allowGuestControl,
+      currentUrl: res.roomState.currentUrl
     };
-    if (roomState.isHost) {
+    if (roomState.isHost && isCurrentActiveVideoTab()) {
       startHeartbeat();
+    } else {
+      stopHeartbeat();
     }
   } else {
     roomState = { isInRoom: false, isHost: false, allowGuestControl: false };
@@ -351,10 +406,11 @@ chrome.runtime.onMessage.addListener((request) => {
       roomState = {
         isInRoom: true,
         isHost: payload.isHost,
-        allowGuestControl: payload.allowGuestControl
+        allowGuestControl: payload.allowGuestControl,
+        currentUrl: payload.currentUrl
       };
       console.log('[CoView] 房間狀態即時更新 (已在房間中):', roomState);
-      if (roomState.isHost) {
+      if (roomState.isHost && isCurrentActiveVideoTab()) {
         startHeartbeat();
       } else {
         stopHeartbeat();
@@ -365,8 +421,8 @@ chrome.runtime.onMessage.addListener((request) => {
       console.log('[CoView] 已退出房間，完全釋放播放器控制權限');
     }
   } else if (type === 'CS_REQUEST_CURRENT_STATE') {
-    // 規格 4.1 Host 被要求回報狀態給新進人員
-    if (targetVideo && roomState.isHost) {
+    // 規格 4.1 Host 被要求回報狀態給新進人員 (僅當前影片分頁允許回報)
+    if (targetVideo && roomState.isHost && isCurrentActiveVideoTab()) {
       console.log('[CoView Host] 回報最新影片狀態給新進成員 Socket:', payload.targetGuestSocketId);
       chrome.runtime.sendMessage({
         type: 'BG_SYNC_STATE',

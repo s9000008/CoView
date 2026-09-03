@@ -1,5 +1,5 @@
 import { io, Socket } from 'socket.io-client';
-import { RoomStateInfo, ConnectionMode, ExtensionMessage } from '../types/protocol';
+import { RoomStateInfo, ConnectionMode, ExtensionMessage, getVideoIdentifier } from '../types/protocol';
 import { DEFAULT_SERVER_URL } from '../config';
 
 // 規格 5.1 安全白名單 (支援 YouTube 各種參數排列、Bilibili 一般影片與番劇)
@@ -195,7 +195,14 @@ function initSocketConnection(serverUrl: string): Promise<Socket> {
     socket.on('REDIRECT_ROOM', (data) => {
       console.log('[Background] 收到 REDIRECT_ROOM 網頁跳轉:', data);
       if (data.data?.targetUrl) {
+        if (currentRoomState) {
+          currentRoomState.currentUrl = data.data.targetUrl;
+        }
         verifyAndRedirect(data.data.targetUrl);
+        broadcastToVideoTabs({
+          type: 'CS_ROOM_STATE_CHANGED',
+          payload: currentRoomState
+        });
       }
     });
 
@@ -550,6 +557,16 @@ chrome.runtime.onMessage.addListener((request: ExtensionMessage, sender, sendRes
       const syncData = payload?.data ?? (request as any).data;
       const targetGuestSocketId = payload?.targetGuestSocketId ?? (request as any).targetGuestSocketId;
 
+      // 核心過濾防線：比對發送事件的分頁網址是否符合房間目標影片
+      if (sender.tab?.url && currentRoomState?.currentUrl) {
+        const senderVideoId = getVideoIdentifier(sender.tab.url);
+        const roomVideoId = getVideoIdentifier(currentRoomState.currentUrl);
+        if (senderVideoId && roomVideoId && senderVideoId !== roomVideoId) {
+          console.log(`[Background] 捨棄來自非當前房間目標影片分頁的同步事件 (${sender.tab.url})`);
+          break;
+        }
+      }
+
       if (currentRoomState?.mode === 'P2P' && currentRoomState?.p2pStatus === 'CONNECTED') {
         chrome.runtime.sendMessage({
           type: 'OFFSCREEN_SEND_DATA',
@@ -568,7 +585,13 @@ chrome.runtime.onMessage.addListener((request: ExtensionMessage, sender, sendRes
 
     case 'BG_REDIRECT_ROOM': {
       if (currentRoomState && currentRoomState.isHost) {
+        currentRoomState.currentUrl = payload.targetUrl;
         verifyAndRedirect(payload.targetUrl);
+
+        broadcastToVideoTabs({
+          type: 'CS_ROOM_STATE_CHANGED',
+          payload: currentRoomState
+        });
 
         if (currentRoomState.mode === 'P2P' && currentRoomState.p2pStatus === 'CONNECTED') {
           chrome.runtime.sendMessage({
@@ -847,7 +870,14 @@ chrome.runtime.onMessage.addListener((request: ExtensionMessage, sender, sendRes
           payload: { data: syncData }
         });
       } else if (syncData.type === 'REDIRECT_ROOM') {
+        if (currentRoomState) {
+          currentRoomState.currentUrl = syncData.targetUrl;
+        }
         verifyAndRedirect(syncData.targetUrl);
+        broadcastToVideoTabs({
+          type: 'CS_ROOM_STATE_CHANGED',
+          payload: currentRoomState
+        });
       } else if (syncData.type === 'TOGGLE_PERMISSION') {
         if (currentRoomState) {
           currentRoomState.allowGuestControl = syncData.allowGuestControl;
