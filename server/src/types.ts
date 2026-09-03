@@ -1,4 +1,4 @@
-export type ConnectionMode = 'DEFAULT' | 'CUSTOM_IP';
+export type ConnectionMode = 'DEFAULT' | 'CUSTOM_IP' | 'P2P';
 
 export type CoViewEvent = 
   | 'CREATE_ROOM' 
@@ -9,6 +9,10 @@ export type CoViewEvent =
   | 'SYNC_STATE' 
   | 'REDIRECT_ROOM' 
   | 'TOGGLE_PERMISSION' 
+  | 'SIGNAL_OFFER'
+  | 'SIGNAL_ANSWER'
+  | 'SIGNAL_ICE_CANDIDATE'
+  | 'P2P_FALLBACK'
   | 'ERROR';
 
 export interface CoViewPayload {
@@ -84,8 +88,10 @@ export interface SignalOfferMsg {
   event: 'SIGNAL_OFFER';
   roomId: string;
   data: {
-    targetUserId: string;
-    senderUserId: string;
+    targetSocketId?: string;
+    senderSocketId?: string;
+    targetUserId?: string;
+    senderUserId?: string;
     sdp: any;
   };
 }
@@ -94,8 +100,10 @@ export interface SignalAnswerMsg {
   event: 'SIGNAL_ANSWER';
   roomId: string;
   data: {
-    targetUserId: string;
-    senderUserId: string;
+    targetSocketId?: string;
+    senderSocketId?: string;
+    targetUserId?: string;
+    senderUserId?: string;
     sdp: any;
   };
 }
@@ -104,8 +112,10 @@ export interface SignalIceCandidateMsg {
   event: 'SIGNAL_ICE_CANDIDATE';
   roomId: string;
   data: {
-    targetUserId: string;
-    senderUserId: string;
+    targetSocketId?: string;
+    senderSocketId?: string;
+    targetUserId?: string;
+    senderUserId?: string;
     candidate: any;
   };
 }
@@ -124,6 +134,8 @@ export interface RoomState {
   currentUrl: string;
   allowGuestControl: boolean;
   isSelfHosted: boolean;
+  mode?: ConnectionMode;
   members: Map<string, RoomMember>;
   hostDisconnectTimer?: NodeJS.Timeout;
 }
+

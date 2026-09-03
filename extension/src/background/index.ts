@@ -1,5 +1,5 @@
 import { io, Socket } from 'socket.io-client';
-import { RoomStateInfo } from '../types/protocol';
+import { RoomStateInfo, ConnectionMode, ExtensionMessage } from '../types/protocol';
 import { DEFAULT_SERVER_URL } from '../config';
 
 // 規格 5.1 安全白名單 (支援 YouTube 各種參數排列、Bilibili 一般影片與番劇)
@@ -26,7 +26,6 @@ chrome.storage?.local?.get(['coview_user_id'], (result) => {
 // ----------------------------------------------------
 // 1. MV3 保活機制 (Keep-Alive)
 // ----------------------------------------------------
-// 保活通道 1: Port 連接監聽
 chrome.runtime.onConnect.addListener((port) => {
   if (port.name === 'coview-keepalive') {
     console.log('[Background] 收到 Content Script 長連接保活 Port');
@@ -36,7 +35,6 @@ chrome.runtime.onConnect.addListener((port) => {
   }
 });
 
-// 保活通道 2: Alarm 備援 (每 20 秒觸發一次)
 chrome.alarms.create('coview-ping-alarm', { periodInMinutes: 0.33 });
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === 'coview-ping-alarm') {
@@ -48,7 +46,53 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 });
 
 // ----------------------------------------------------
-// 2. 資安防禦：網域白名單過濾跳轉
+// 2. Offscreen Document 生命週期管理 (WebRTC 核心載體)
+// ----------------------------------------------------
+let creatingOffscreen: Promise<void> | null = null;
+
+async function ensureOffscreenDocument() {
+  const offscreenUrl = 'src/offscreen/index.html';
+  if ((chrome as any).offscreen?.hasDocument) {
+    const hasDoc = await (chrome as any).offscreen.hasDocument();
+    if (hasDoc) return;
+  }
+
+  if (creatingOffscreen) {
+    await creatingOffscreen;
+  } else {
+    try {
+      creatingOffscreen = (chrome as any).offscreen.createDocument({
+        url: offscreenUrl,
+        reasons: [(chrome as any).offscreen.Reason.WEB_RTC],
+        justification: 'WebRTC P2P DataChannel connection for CoView sync'
+      });
+      await creatingOffscreen;
+      creatingOffscreen = null;
+      console.log('[Background] 成功建立 Offscreen Document');
+    } catch (err: any) {
+      creatingOffscreen = null;
+      if (!err.message?.includes('Only a single offscreen document may be created')) {
+        console.error('[Background] 建立 Offscreen Document 失敗:', err);
+      }
+    }
+  }
+}
+
+async function closeOffscreenDocument() {
+  try {
+    if ((chrome as any).offscreen?.hasDocument) {
+      const hasDoc = await (chrome as any).offscreen.hasDocument();
+      if (!hasDoc) return;
+    }
+    await (chrome as any).offscreen.closeDocument();
+    console.log('[Background] Offscreen Document 已關閉');
+  } catch (err) {
+    // 忽略關閉錯誤
+  }
+}
+
+// ----------------------------------------------------
+// 3. 資安防禦：網域白名單過濾跳轉
 // ----------------------------------------------------
 function verifyAndRedirect(targetUrl: string) {
   const isSafe = HOST_WHITELIST.some((regex) => regex.test(targetUrl));
@@ -73,11 +117,10 @@ function verifyAndRedirect(targetUrl: string) {
 }
 
 // ----------------------------------------------------
-// 3. WebSocket 初始化與 Socket.IO 連線
+// 4. WebSocket 初始化與 Socket.IO 連線 (兼作信令通道)
 // ----------------------------------------------------
 function initSocketConnection(serverUrl: string): Promise<Socket> {
   return new Promise((resolve, reject) => {
-    // 若已有相同伺服器之連線且狀態正常，直接重用
     if (socket && socket.connected && (socket as any)._serverUrl === serverUrl) {
       console.log(`[Background] 重用現有 Socket.IO 連線: ${serverUrl}`);
       return resolve(socket);
@@ -89,9 +132,7 @@ function initSocketConnection(serverUrl: string): Promise<Socket> {
     }
 
     console.log(`[Background] 初始化 Socket.IO 連線: ${serverUrl}`);
-    
-    // 在 Chrome MV3 Service Worker 環境中，強制使用 websocket transport
-    // 避免因 Service Worker 缺乏 XMLHttpRequest 導致 polling 連線中斷
+
     socket = io(serverUrl, {
       transports: ['websocket'],
       reconnection: true,
@@ -128,9 +169,13 @@ function initSocketConnection(serverUrl: string): Promise<Socket> {
       }
     });
 
-    // 接收 SYNC_STATE 訊息轉發至 Content Script
+    // 接收 SYNC_STATE 訊息轉發至 Content Script (常規與回退中繼)
     socket.on('SYNC_STATE', (data) => {
-      console.log('[Background] 收到 SYNC_STATE，廣播給頁面 Content Script:', data);
+      // 若處於 P2P 直連中，忽略伺服器重複中繼的 SYNC_STATE
+      if (currentRoomState?.mode === 'P2P' && currentRoomState?.p2pStatus === 'CONNECTED') {
+        return;
+      }
+      console.log('[Background] 收到 Socket SYNC_STATE，廣播給頁面 Content Script:', data);
       broadcastToVideoTabs({
         type: 'CS_SYNC_RECEIVED',
         payload: data
@@ -165,6 +210,76 @@ function initSocketConnection(serverUrl: string): Promise<Socket> {
       });
     });
 
+    // 接收伺服器定時或即時人數校準通知
+    socket.on('MEMBER_COUNT_UPDATED', (data: { count: number }) => {
+      console.log('[Background] 收到伺服器人數校準更新:', data.count);
+      if (currentRoomState) {
+        currentRoomState.connectedPeerCount = data.count;
+        broadcastToVideoTabs({
+          type: 'CS_ROOM_STATE_CHANGED',
+          payload: currentRoomState
+        });
+        chrome.runtime.sendMessage({
+          type: 'CS_ROOM_STATE_CHANGED',
+          payload: currentRoomState
+        }).catch(() => {});
+      }
+    });
+
+    // 啟動 30 秒中繼模式定期校準
+    setInterval(() => {
+      if (socket && socket.connected && currentRoomState && currentRoomState.mode !== 'P2P') {
+        socket.emit('GET_ROOM_MEMBER_COUNT', { roomId: currentRoomState.roomId });
+      }
+    }, 30000);
+
+    // WebRTC P2P 信令事件監聽
+    socket.on('MEMBER_JOINED', (data: any) => {
+      console.log('[Background] 收到新成員加入房間通知:', data);
+      if (currentRoomState?.mode === 'P2P' && currentRoomState?.isHost && data.socketId) {
+        console.log(`[Background Host] P2P 模式：觸發與新成員 (${data.socketId}) 之 DataChannel 握手`);
+        chrome.runtime.sendMessage({
+          type: 'OFFSCREEN_NEW_PEER',
+          payload: { socketId: data.socketId, userId: data.userId }
+        } as ExtensionMessage).catch(() => {});
+      }
+    });
+
+    socket.on('SIGNAL_OFFER', (data: any) => {
+      console.log('[Background Guest] 收到 SIGNAL_OFFER 信令，轉發給 Offscreen:', data);
+      chrome.runtime.sendMessage({
+        type: 'OFFSCREEN_SIGNAL_OFFER',
+        payload: data.data
+      } as ExtensionMessage).catch(() => {});
+    });
+
+    socket.on('SIGNAL_ANSWER', (data: any) => {
+      console.log('[Background Host] 收到 SIGNAL_ANSWER 信令，轉發給 Offscreen:', data);
+      chrome.runtime.sendMessage({
+        type: 'OFFSCREEN_SIGNAL_ANSWER',
+        payload: data.data
+      } as ExtensionMessage).catch(() => {});
+    });
+
+    socket.on('SIGNAL_ICE_CANDIDATE', (data: any) => {
+      chrome.runtime.sendMessage({
+        type: 'OFFSCREEN_SIGNAL_ICE_CANDIDATE',
+        payload: data.data
+      } as ExtensionMessage).catch(() => {});
+    });
+
+    socket.on('P2P_FALLBACK', (data: any) => {
+      console.warn('[Background] 收到伺服器 P2P_FALLBACK 通知，系統降級回退至伺服器中繼:', data);
+      if (currentRoomState) {
+        currentRoomState.p2pStatus = 'FALLBACK';
+        currentRoomState.mode = 'DEFAULT';
+      }
+      broadcastToVideoTabs({
+        type: 'CS_ROOM_STATE_CHANGED',
+        payload: currentRoomState
+      });
+    });
+
     socket.on('disconnect', (reason) => {
       console.warn(`[Background] WebSocket 連線中斷: ${reason}`);
     });
@@ -182,15 +297,20 @@ function broadcastToVideoTabs(msg: any) {
 }
 
 // ----------------------------------------------------
-// 4. 解析複合分享碼 (RoomID|Base64(ServerURL))
+// 5. 解析複合分享碼 (RoomID|Base64(ServerURL))
 // ----------------------------------------------------
-function parseShareCode(inputCode: string): { roomId: string; serverUrl: string } {
+function parseShareCode(inputCode: string): { roomId: string; serverUrl: string; mode: ConnectionMode } {
   let trimmed = inputCode.trim();
+  let mode: ConnectionMode = 'DEFAULT';
 
-  // 支援 IP: 或 DEF: 前綴過濾
-  if (trimmed.startsWith('IP:')) {
+  if (trimmed.startsWith('P2P:')) {
+    mode = 'P2P';
+    trimmed = trimmed.substring(4);
+  } else if (trimmed.startsWith('IP:')) {
+    mode = 'CUSTOM_IP';
     trimmed = trimmed.substring(3);
   } else if (trimmed.startsWith('DEF:')) {
+    mode = 'DEFAULT';
     trimmed = trimmed.substring(4);
   }
 
@@ -198,24 +318,68 @@ function parseShareCode(inputCode: string): { roomId: string; serverUrl: string 
     const [roomId, base64Url] = trimmed.split('|');
     try {
       const decodedUrl = atob(base64Url);
-      return { roomId: roomId.toUpperCase(), serverUrl: decodedUrl };
+      return { roomId: roomId.toUpperCase(), serverUrl: decodedUrl, mode };
     } catch (e) {
       console.error('Base64 解碼失敗，使用預設伺服器');
     }
   }
-  return { roomId: trimmed.toUpperCase(), serverUrl: DEFAULT_SERVER_URL };
+  return { roomId: trimmed.toUpperCase(), serverUrl: DEFAULT_SERVER_URL, mode };
 }
 
 // ----------------------------------------------------
-// 5. Message 監聽器 (來自 Popup 與 Content Script)
+// 6. Message 監聽器 (來自 Popup, Content Script 與 Offscreen)
 // ----------------------------------------------------
-chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((request: ExtensionMessage, sender, sendResponse) => {
   const { type, payload } = request;
 
   switch (type) {
     case 'BG_CREATE_ROOM': {
-      const mode = payload?.mode || 'DEFAULT';
+      const mode: ConnectionMode = payload?.mode || 'DEFAULT';
       const serverUrl = payload?.customServerUrl || DEFAULT_SERVER_URL;
+
+      if (mode === 'P2P') {
+        ensureOffscreenDocument()
+          .then(() => {
+            chrome.runtime.sendMessage(
+              {
+                type: 'OFFSCREEN_PEER_CREATE_ROOM',
+                payload: { userId }
+              } as ExtensionMessage,
+              (res) => {
+                if (res?.success) {
+                  currentRoomState = {
+                    roomId: res.roomId,
+                    isHost: true,
+                    allowGuestControl: false,
+                    serverUrl: 'WebRTC P2P (純端對端直連)',
+                    currentUrl: payload.currentUrl,
+                    mode: 'P2P',
+                    p2pStatus: 'CONNECTED',
+                    connectedPeerCount: 1,
+                    pendingJoinRequests: [],
+                    compositeCode: res.roomId
+                  };
+                  broadcastToVideoTabs({
+                    type: 'CS_ROOM_STATE_CHANGED',
+                    payload: currentRoomState
+                  });
+                  sendResponse({
+                    success: true,
+                    compositeCode: res.roomId,
+                    roomId: res.roomId,
+                    roomState: currentRoomState
+                  });
+                } else {
+                  sendResponse({ success: false, error: res?.error || '建立 P2P 房間失敗' });
+                }
+              }
+            );
+          })
+          .catch((err) => {
+            sendResponse({ success: false, error: err.message });
+          });
+        return true;
+      }
 
       initSocketConnection(serverUrl)
         .then((s) => {
@@ -234,9 +398,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             sendResponse({ success: false, error: '伺服器回應逾時 (CREATE_ROOM_SUCCESS 未收到)' });
           }, 6000);
 
-          s.once('CREATE_ROOM_SUCCESS', (res: any) => {
+          s.once('CREATE_ROOM_SUCCESS', async (res: any) => {
             clearTimeout(createTimer);
-            // 組裝複合分享代碼: RoomID|Base64(ServerURL)
             const base64Url = btoa(serverUrl);
             let compositeCode = `${res.roomId}|${base64Url}`;
             if (mode === 'CUSTOM_IP') {
@@ -249,10 +412,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
               allowGuestControl: res.data.allowGuestControl,
               serverUrl,
               currentUrl: payload.currentUrl,
-              mode
+              mode,
+              p2pStatus: undefined,
+              connectedPeerCount: 1,
+              compositeCode
             };
 
-            // 通知分頁 Content Script 房間已建立並已指派為 Host
             broadcastToVideoTabs({
               type: 'CS_ROOM_STATE_CHANGED',
               payload: currentRoomState
@@ -265,34 +430,101 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
           console.error('[Background] BG_CREATE_ROOM 失敗:', err);
           sendResponse({ success: false, error: err.message });
         });
-      return true; // 保持 async sendResponse
+      return true;
     }
 
     case 'BG_JOIN_ROOM': {
-      const { roomId, serverUrl } = parseShareCode(payload.shareCode);
+      const rawInput = payload.shareCode ? payload.shareCode.trim() : '';
+
+      // 若為純 6 碼或指名 P2P 模式，走 PeerJS 雲端握手
+      if (
+        payload.mode === 'P2P' ||
+        (!rawInput.includes('|') && !rawInput.startsWith('http') && !rawInput.startsWith('IP:') && !rawInput.startsWith('P2P:'))
+      ) {
+        ensureOffscreenDocument()
+          .then(() => {
+            chrome.runtime.sendMessage(
+              {
+                type: 'OFFSCREEN_PEER_JOIN_ROOM',
+                payload: { roomId: rawInput, userId }
+              } as ExtensionMessage,
+              (res) => {
+                if (res?.success) {
+                  // 若在回調抵達前已收到核准訊號，避免被覆蓋為 awaitingApproval: true
+                  if (!currentRoomState || currentRoomState.p2pStatus !== 'CONNECTED') {
+                    currentRoomState = {
+                      roomId: res.roomId,
+                      isHost: false,
+                      allowGuestControl: false,
+                      serverUrl: 'WebRTC P2P (純端對端直連)',
+                      mode: 'P2P',
+                      p2pStatus: 'CONNECTING',
+                      guestAwaitingApproval: true,
+                      connectedPeerCount: 1,
+                      compositeCode: res.roomId
+                    };
+                  }
+                  broadcastToVideoTabs({
+                    type: 'CS_ROOM_STATE_CHANGED',
+                    payload: currentRoomState
+                  });
+                  sendResponse({ success: true, roomId: res.roomId, roomState: currentRoomState });
+                } else {
+                  sendResponse({ success: false, error: res?.error || '加入 P2P 房間失敗' });
+                }
+              }
+            );
+          })
+          .catch((err) => {
+            sendResponse({ success: false, error: err.message });
+          });
+        return true;
+      }
+      const parsed = parseShareCode(payload.shareCode);
+      const { roomId, serverUrl, mode } = parsed;
+
       initSocketConnection(serverUrl)
         .then((s) => {
           s.emit('JOIN_ROOM', {
             event: 'JOIN_ROOM',
             roomId,
-            data: { userId }
+            data: { userId, mode }
           });
 
           const joinTimer = setTimeout(() => {
             sendResponse({ success: false, error: '伺服器回應逾時 (JOIN_ROOM_SUCCESS 未收到)' });
           }, 6000);
 
-          s.once('JOIN_ROOM_SUCCESS', (res: any) => {
+          s.once('JOIN_ROOM_SUCCESS', async (res: any) => {
             clearTimeout(joinTimer);
+            const actualMode: ConnectionMode = mode === 'P2P' ? 'P2P' : (res.data.mode || 'DEFAULT');
+
             currentRoomState = {
               roomId: res.roomId,
               isHost: false,
               allowGuestControl: res.data.allowGuestControl,
               serverUrl,
-              currentUrl: res.data.currentUrl
+              currentUrl: res.data.currentUrl,
+              mode: actualMode,
+              p2pStatus: actualMode === 'P2P' ? 'CONNECTING' : undefined,
+              connectedPeerCount: 0,
+              compositeCode: payload.shareCode
             };
 
-            // 通知分頁 Content Script 房間已加入（Guest 角色）
+            if (actualMode === 'P2P') {
+              await ensureOffscreenDocument();
+              chrome.runtime.sendMessage({
+                type: 'OFFSCREEN_INIT_P2P',
+                payload: {
+                  role: 'GUEST',
+                  roomId: res.roomId,
+                  userId,
+                  socketId: s.id,
+                  hostSocketId: res.data.hostSocketId
+                }
+              } as ExtensionMessage).catch(() => {});
+            }
+
             broadcastToVideoTabs({
               type: 'CS_ROOM_STATE_CHANGED',
               payload: currentRoomState
@@ -313,11 +545,17 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       return true;
     }
 
+    // 雙向路由：若 P2P 直連已建立，優先透過 DataChannel 傳送；否則透過 Socket.IO
     case 'BG_SYNC_STATE': {
-      if (socket && currentRoomState) {
-        const syncData = payload?.data ?? request.data;
-        const targetGuestSocketId = payload?.targetGuestSocketId ?? request.targetGuestSocketId;
+      const syncData = payload?.data ?? (request as any).data;
+      const targetGuestSocketId = payload?.targetGuestSocketId ?? (request as any).targetGuestSocketId;
 
+      if (currentRoomState?.mode === 'P2P' && currentRoomState?.p2pStatus === 'CONNECTED') {
+        chrome.runtime.sendMessage({
+          type: 'OFFSCREEN_SEND_DATA',
+          payload: syncData
+        } as ExtensionMessage).catch(() => {});
+      } else if (socket && currentRoomState) {
         socket.emit('SYNC_STATE', {
           event: 'SYNC_STATE',
           roomId: currentRoomState.roomId,
@@ -329,13 +567,26 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
 
     case 'BG_REDIRECT_ROOM': {
-      if (socket && currentRoomState && currentRoomState.isHost) {
+      if (currentRoomState && currentRoomState.isHost) {
         verifyAndRedirect(payload.targetUrl);
-        socket.emit('REDIRECT_ROOM', {
-          event: 'REDIRECT_ROOM',
-          roomId: currentRoomState.roomId,
-          data: { targetUrl: payload.targetUrl }
-        });
+
+        if (currentRoomState.mode === 'P2P' && currentRoomState.p2pStatus === 'CONNECTED') {
+          chrome.runtime.sendMessage({
+            type: 'OFFSCREEN_SEND_DATA',
+            payload: {
+              type: 'REDIRECT_ROOM',
+              targetUrl: payload.targetUrl
+            }
+          } as ExtensionMessage).catch(() => {});
+        }
+
+        if (socket) {
+          socket.emit('REDIRECT_ROOM', {
+            event: 'REDIRECT_ROOM',
+            roomId: currentRoomState.roomId,
+            data: { targetUrl: payload.targetUrl }
+          });
+        }
         sendResponse({ success: true });
       } else {
         sendResponse({ success: false, error: '非 Host 無法發起跳轉' });
@@ -344,39 +595,390 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
 
     case 'BG_TOGGLE_PERMISSION': {
-      if (socket && currentRoomState && currentRoomState.isHost) {
+      if (currentRoomState && currentRoomState.isHost) {
         currentRoomState.allowGuestControl = payload.allowGuestControl;
         broadcastToVideoTabs({
           type: 'CS_PERMISSION_UPDATED',
           payload: { allowGuestControl: payload.allowGuestControl }
         });
-        socket.emit('TOGGLE_PERMISSION', {
-          event: 'TOGGLE_PERMISSION',
-          roomId: currentRoomState.roomId,
-          data: { allowGuestControl: payload.allowGuestControl }
-        });
+
+        if (currentRoomState.mode === 'P2P' && currentRoomState.p2pStatus === 'CONNECTED') {
+          chrome.runtime.sendMessage({
+            type: 'OFFSCREEN_SEND_DATA',
+            payload: {
+              type: 'TOGGLE_PERMISSION',
+              allowGuestControl: payload.allowGuestControl
+            }
+          } as ExtensionMessage).catch(() => {});
+        }
+
+        if (socket) {
+          socket.emit('TOGGLE_PERMISSION', {
+            event: 'TOGGLE_PERMISSION',
+            roomId: currentRoomState.roomId,
+            data: { allowGuestControl: payload.allowGuestControl }
+          });
+        }
         sendResponse({ success: true });
       }
       return true;
     }
 
     case 'BG_LEAVE_ROOM': {
+      chrome.action.setBadgeText({ text: '' });
+      chrome.runtime.sendMessage({ type: 'OFFSCREEN_CLOSE_P2P' } as ExtensionMessage).catch(() => {});
       if (socket) {
         socket.disconnect();
         socket = null;
       }
+      closeOffscreenDocument().catch(() => {});
       currentRoomState = null;
       broadcastToVideoTabs({
         type: 'CS_ROOM_STATE_CHANGED',
         payload: null
       });
+      chrome.runtime.sendMessage({
+        type: 'CS_ROOM_STATE_CHANGED',
+        payload: null
+      }).catch(() => {});
       sendResponse({ success: true });
       break;
     }
 
-    case 'GET_ROOM_STATE': {
-      sendResponse({ roomState: currentRoomState, userId });
+    case 'BG_APPROVE_JOIN_REQUEST': {
+      chrome.runtime.sendMessage(
+        {
+          type: 'OFFSCREEN_APPROVE_JOIN_REQUEST',
+          payload: {
+            requestId: payload.requestId,
+            hostCurrentUrl: currentRoomState?.currentUrl
+          }
+        } as ExtensionMessage,
+        () => {
+          if (currentRoomState && currentRoomState.pendingJoinRequests) {
+            currentRoomState.pendingJoinRequests = currentRoomState.pendingJoinRequests.filter(
+              (r) => r.requestId !== payload.requestId
+            );
+            const count = currentRoomState.pendingJoinRequests.length;
+            chrome.action.setBadgeText({ text: count > 0 ? `${count}` : '' });
+            chrome.action.setBadgeBackgroundColor({ color: '#10b981' });
+            broadcastToVideoTabs({
+              type: 'CS_ROOM_STATE_CHANGED',
+              payload: currentRoomState
+            });
+            chrome.runtime.sendMessage({
+              type: 'CS_ROOM_STATE_CHANGED',
+              payload: currentRoomState
+            }).catch(() => {});
+          }
+          sendResponse({ success: true });
+        }
+      );
+      return true;
+    }
+
+    case 'BG_REJECT_JOIN_REQUEST': {
+      chrome.runtime.sendMessage(
+        {
+          type: 'OFFSCREEN_REJECT_JOIN_REQUEST',
+          payload: { requestId: payload.requestId }
+        } as ExtensionMessage,
+        () => {
+          if (currentRoomState && currentRoomState.pendingJoinRequests) {
+            currentRoomState.pendingJoinRequests = currentRoomState.pendingJoinRequests.filter(
+              (r) => r.requestId !== payload.requestId
+            );
+            const count = currentRoomState.pendingJoinRequests.length;
+            chrome.action.setBadgeText({ text: count > 0 ? `${count}` : '' });
+            chrome.action.setBadgeBackgroundColor({ color: '#10b981' });
+            broadcastToVideoTabs({
+              type: 'CS_ROOM_STATE_CHANGED',
+              payload: currentRoomState
+            });
+            chrome.runtime.sendMessage({
+              type: 'CS_ROOM_STATE_CHANGED',
+              payload: currentRoomState
+            }).catch(() => {});
+          }
+          sendResponse({ success: true });
+        }
+      );
+      return true;
+    }
+
+    case 'CS_JOIN_REQUESTS_UPDATED': {
+      if (currentRoomState) {
+        const requests = payload.pendingRequests || [];
+        currentRoomState.pendingJoinRequests = requests;
+        const count = requests.length;
+        chrome.action.setBadgeText({ text: count > 0 ? `${count}` : '' });
+        chrome.action.setBadgeBackgroundColor({ color: '#10b981' });
+        broadcastToVideoTabs({
+          type: 'CS_ROOM_STATE_CHANGED',
+          payload: currentRoomState
+        });
+        chrome.runtime.sendMessage({
+          type: 'CS_ROOM_STATE_CHANGED',
+          payload: currentRoomState
+        }).catch(() => {});
+      }
       break;
+    }
+
+    case 'GET_ROOM_STATE': {
+      sendResponse({ roomState: currentRoomState, userId, compositeCode: currentRoomState?.compositeCode });
+      break;
+    }
+
+    // ----------------------------------------------------
+    // Offscreen WebRTC 消息與信令轉發
+    // ----------------------------------------------------
+    case 'OFFSCREEN_SIGNAL_OFFER': {
+      if (socket && currentRoomState) {
+        socket.emit('SIGNAL_OFFER', {
+          event: 'SIGNAL_OFFER',
+          roomId: currentRoomState.roomId,
+          data: payload
+        });
+      }
+      break;
+    }
+
+    case 'OFFSCREEN_SIGNAL_ANSWER': {
+      if (socket && currentRoomState) {
+        socket.emit('SIGNAL_ANSWER', {
+          event: 'SIGNAL_ANSWER',
+          roomId: currentRoomState.roomId,
+          data: payload
+        });
+      }
+      break;
+    }
+
+    case 'OFFSCREEN_SIGNAL_ICE_CANDIDATE': {
+      if (socket && currentRoomState) {
+        socket.emit('SIGNAL_ICE_CANDIDATE', {
+          event: 'SIGNAL_ICE_CANDIDATE',
+          roomId: currentRoomState.roomId,
+          data: payload
+        });
+      }
+      break;
+    }
+
+    case 'BG_P2P_GUEST_APPROVED': {
+      if (currentRoomState) {
+        currentRoomState.p2pStatus = 'CONNECTED';
+        currentRoomState.guestAwaitingApproval = false;
+        currentRoomState.connectedPeerCount = payload?.memberCount || 2;
+        if (payload?.hostCurrentUrl) {
+          currentRoomState.currentUrl = payload.hostCurrentUrl;
+        }
+        broadcastToVideoTabs({
+          type: 'CS_ROOM_STATE_CHANGED',
+          payload: currentRoomState
+        });
+        chrome.runtime.sendMessage({
+          type: 'CS_ROOM_STATE_CHANGED',
+          payload: currentRoomState
+        }).catch(() => {});
+      }
+      sendResponse({ success: true });
+      break;
+    }
+
+    case 'CS_ROOM_STATE_CHANGED': {
+      if (payload) {
+        currentRoomState = {
+          ...(currentRoomState || {}),
+          ...payload
+        };
+        broadcastToVideoTabs({
+          type: 'CS_ROOM_STATE_CHANGED',
+          payload: currentRoomState
+        });
+      }
+      break;
+    }
+
+    case 'OFFSCREEN_P2P_STATUS': {
+      if (currentRoomState) {
+        currentRoomState.p2pStatus = payload.status;
+        currentRoomState.connectedPeerCount = payload.peerCount;
+        if (payload.status === 'CONNECTED') {
+          currentRoomState.serverlessHandshakeState = 'CONNECTED';
+        }
+        broadcastToVideoTabs({
+          type: 'CS_ROOM_STATE_CHANGED',
+          payload: currentRoomState
+        });
+        // 即時通知開啟中的 Popup 控制面板
+        chrome.runtime.sendMessage({
+          type: 'CS_ROOM_STATE_CHANGED',
+          payload: currentRoomState
+        }).catch(() => {});
+      }
+      break;
+    }
+
+    case 'OFFSCREEN_TRIGGER_FALLBACK': {
+      console.warn('[Background] Offscreen 回報 P2P 連線失敗，啟動降級流程:', payload.reason);
+      if (socket && currentRoomState) {
+        socket.emit('P2P_FALLBACK', {
+          roomId: currentRoomState.roomId,
+          reason: payload.reason
+        });
+        currentRoomState.p2pStatus = 'FALLBACK';
+        currentRoomState.mode = 'DEFAULT';
+        broadcastToVideoTabs({
+          type: 'CS_ROOM_STATE_CHANGED',
+          payload: currentRoomState
+        });
+      }
+      break;
+    }
+
+    case 'OFFSCREEN_DATA_RECEIVED': {
+      // 來自 DataChannel 直連同步事件
+      const syncData = payload;
+      if (syncData.action) {
+        broadcastToVideoTabs({
+          type: 'CS_SYNC_RECEIVED',
+          payload: { data: syncData }
+        });
+      } else if (syncData.type === 'REDIRECT_ROOM') {
+        verifyAndRedirect(syncData.targetUrl);
+      } else if (syncData.type === 'TOGGLE_PERMISSION') {
+        if (currentRoomState) {
+          currentRoomState.allowGuestControl = syncData.allowGuestControl;
+        }
+        broadcastToVideoTabs({
+          type: 'CS_PERMISSION_UPDATED',
+          payload: { allowGuestControl: syncData.allowGuestControl }
+        });
+      }
+      break;
+    }
+
+    // Serverless 剪貼簿模式專屬訊息 (完全不經任何伺服器)
+    case 'BG_SERVERLESS_CREATE_OFFER': {
+      ensureOffscreenDocument()
+        .then(() => {
+          chrome.runtime.sendMessage(
+            { type: 'OFFSCREEN_SERVERLESS_CREATE_OFFER' } as ExtensionMessage,
+            (res) => {
+              if (res?.success) {
+                if (!currentRoomState) {
+                  currentRoomState = {
+                    roomId: res.roomId,
+                    isHost: true,
+                    allowGuestControl: false,
+                    serverUrl: 'WebRTC P2P (純端對端直連)',
+                    currentUrl: payload?.currentUrl,
+                    mode: 'P2P',
+                    p2pStatus: 'CONNECTING',
+                    serverlessHandshakeState: 'AWAITING_ANSWER',
+                    offerCode: res.offerCode,
+                    connectedPeerCount: 1
+                  };
+                } else {
+                  currentRoomState.offerCode = res.offerCode;
+                }
+                broadcastToVideoTabs({
+                  type: 'CS_ROOM_STATE_CHANGED',
+                  payload: currentRoomState
+                });
+                sendResponse({
+                  success: true,
+                  offerCode: res.offerCode,
+                  roomId: res.roomId,
+                  peerId: res.peerId,
+                  roomState: currentRoomState
+                });
+              } else {
+                sendResponse({ success: false, error: res?.error || '產生 P2P 邀請碼失敗' });
+              }
+            }
+          );
+        })
+        .catch((err) => {
+          sendResponse({ success: false, error: err.message });
+        });
+      return true;
+    }
+
+    case 'BG_SERVERLESS_ACCEPT_OFFER': {
+      ensureOffscreenDocument()
+        .then(() => {
+          chrome.runtime.sendMessage(
+            {
+              type: 'OFFSCREEN_SERVERLESS_ACCEPT_OFFER',
+              payload: { offerCode: payload.offerCode }
+            } as ExtensionMessage,
+            (res) => {
+              if (res?.success) {
+                currentRoomState = {
+                  roomId: res.roomId,
+                  isHost: false,
+                  allowGuestControl: false,
+                  serverUrl: 'WebRTC P2P (純端對端直連)',
+                  currentUrl: payload?.currentUrl,
+                  mode: 'P2P',
+                  p2pStatus: 'CONNECTING',
+                  serverlessHandshakeState: 'AWAITING_HOST_CONFIRM',
+                  answerCode: res.answerCode,
+                  connectedPeerCount: 0
+                };
+                broadcastToVideoTabs({
+                  type: 'CS_ROOM_STATE_CHANGED',
+                  payload: currentRoomState
+                });
+                sendResponse({
+                  success: true,
+                  answerCode: res.answerCode,
+                  roomId: res.roomId,
+                  roomState: currentRoomState
+                });
+              } else {
+                sendResponse({ success: false, error: res?.error || '解析邀請碼失敗，請確認代碼格式完整' });
+              }
+            }
+          );
+        })
+        .catch((err) => {
+          sendResponse({ success: false, error: err.message });
+        });
+      return true;
+    }
+
+    case 'BG_SERVERLESS_ACCEPT_ANSWER': {
+      chrome.runtime.sendMessage(
+        {
+          type: 'OFFSCREEN_SERVERLESS_ACCEPT_ANSWER',
+          payload: { answerCode: payload.answerCode }
+        } as ExtensionMessage,
+        (res) => {
+          if (res?.success) {
+            if (currentRoomState) {
+              currentRoomState.serverlessHandshakeState = 'CONNECTED';
+              currentRoomState.p2pStatus = 'CONNECTED';
+              currentRoomState.connectedPeerCount = 1;
+              broadcastToVideoTabs({
+                type: 'CS_ROOM_STATE_CHANGED',
+                payload: currentRoomState
+              });
+              chrome.runtime.sendMessage({
+                type: 'CS_ROOM_STATE_CHANGED',
+                payload: currentRoomState
+              }).catch(() => {});
+            }
+            sendResponse({ success: true, roomState: currentRoomState });
+          } else {
+            sendResponse({ success: false, error: res?.error || '套用回執碼失敗，請確認代碼完整性' });
+          }
+        }
+      );
+      return true;
     }
   }
 });

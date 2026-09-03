@@ -10,7 +10,10 @@ import {
   SyncStateMsg,
   RedirectRoomMsg,
   TogglePermissionMsg,
-  CreateRoomRes
+  CreateRoomRes,
+  SignalOfferMsg,
+  SignalAnswerMsg,
+  SignalIceCandidateMsg
 } from './types';
 
 dotenv.config();
@@ -47,8 +50,8 @@ io.on('connection', (socket: Socket) => {
 
   // 1. 建立房間
   socket.on('CREATE_ROOM', (payload: CreateRoomReq) => {
-    const { userId, currentUrl, isSelfHosted } = payload.data;
-    const room = roomManager.createRoom(socket.id, userId, currentUrl, isSelfHosted ?? false);
+    const { userId, currentUrl, isSelfHosted, mode } = payload.data;
+    const room = roomManager.createRoom(socket.id, userId, currentUrl, isSelfHosted ?? false, mode ?? 'DEFAULT');
 
     socket.join(room.roomId);
 
@@ -56,7 +59,8 @@ io.on('connection', (socket: Socket) => {
       event: 'CREATE_ROOM_SUCCESS',
       roomId: room.roomId,
       data: {
-        allowGuestControl: room.allowGuestControl
+        allowGuestControl: room.allowGuestControl,
+        mode: room.mode
       }
     };
 
@@ -82,15 +86,22 @@ io.on('connection', (socket: Socket) => {
       data: {
         allowGuestControl: room.allowGuestControl,
         currentUrl: room.currentUrl,
-        isHost: socket.id === room.hostSocketId
+        isHost: socket.id === room.hostSocketId,
+        mode: room.mode,
+        hostSocketId: room.hostSocketId
       }
     });
 
-    // 通知房間其他成員有新進人員
+    // 通知房間其他成員有新進人員 (攜帶 socketId 以利 WebRTC P2P 建立連線)
     socket.to(room.roomId).emit('MEMBER_JOINED', {
       userId: data.userId,
-      memberCount: room.members.size
+      socketId: socket.id,
+      memberCount: room.members.size,
+      mode: room.mode
     });
+
+    // 廣播最新人數給全房
+    io.to(room.roomId).emit('MEMBER_COUNT_UPDATED', { count: room.members.size });
 
     // 規格 4.1：新人員加入時，向 Host 發送 REQUEST_CURRENT_STATE 拉取最新狀態
     console.log(`[Socket.IO] 向 Host (${room.hostSocketId}) 發送 REQUEST_CURRENT_STATE 拉取狀態給新人員 (${socket.id})`);
@@ -99,6 +110,14 @@ io.on('connection', (socket: Socket) => {
       roomId: room.roomId,
       targetGuestSocketId: socket.id
     });
+  });
+
+  // 人數校準查詢
+  socket.on('GET_ROOM_MEMBER_COUNT', ({ roomId }: { roomId: string }) => {
+    const room = roomManager.getRoom(roomId);
+    if (room) {
+      socket.emit('MEMBER_COUNT_UPDATED', { count: room.members.size });
+    }
   });
 
   // 3. 狀態同步廣播 (PLAY / PAUSE / SEEK / HEARTBEAT)
@@ -165,7 +184,53 @@ io.on('connection', (socket: Socket) => {
     });
   });
 
-  // 6. 離線處理
+  // 6. WebRTC 信令轉發 (P2P DataChannel 握手)
+  socket.on('SIGNAL_OFFER', (payload: SignalOfferMsg) => {
+    const { roomId, data } = payload;
+    data.senderSocketId = socket.id;
+    if (data.targetSocketId) {
+      console.log(`[WebRTC Signaling] 轉發 SIGNAL_OFFER 至 targetSocketId: ${data.targetSocketId}`);
+      io.to(data.targetSocketId).emit('SIGNAL_OFFER', payload);
+    } else {
+      socket.to(roomId).emit('SIGNAL_OFFER', payload);
+    }
+  });
+
+  socket.on('SIGNAL_ANSWER', (payload: SignalAnswerMsg) => {
+    const { roomId, data } = payload;
+    data.senderSocketId = socket.id;
+    if (data.targetSocketId) {
+      console.log(`[WebRTC Signaling] 轉發 SIGNAL_ANSWER 至 targetSocketId: ${data.targetSocketId}`);
+      io.to(data.targetSocketId).emit('SIGNAL_ANSWER', payload);
+    } else {
+      socket.to(roomId).emit('SIGNAL_ANSWER', payload);
+    }
+  });
+
+  socket.on('SIGNAL_ICE_CANDIDATE', (payload: SignalIceCandidateMsg) => {
+    const { roomId, data } = payload;
+    data.senderSocketId = socket.id;
+    if (data.targetSocketId) {
+      io.to(data.targetSocketId).emit('SIGNAL_ICE_CANDIDATE', payload);
+    } else {
+      socket.to(roomId).emit('SIGNAL_ICE_CANDIDATE', payload);
+    }
+  });
+
+  // 7. WebRTC 連線受阻時的降級回退廣播
+  socket.on('P2P_FALLBACK', (payload: { roomId: string; reason?: string }) => {
+    console.log(`[WebRTC Signaling] 房間 ${payload.roomId} 收到 P2P_FALLBACK 請求，通知全體成員切換為中繼模式`);
+    const room = roomManager.getRoom(payload.roomId);
+    if (room) {
+      room.mode = 'DEFAULT';
+      io.to(room.roomId).emit('P2P_FALLBACK', {
+        roomId: room.roomId,
+        message: payload.reason || 'WebRTC 直連受阻，系統已自動降級回退至伺服器中繼模式'
+      });
+    }
+  });
+
+  // 8. 離線處理
   socket.on('disconnect', () => {
     console.log(`[Socket.IO] 用戶斷開連線: ${socket.id}`);
     const result = roomManager.handleDisconnect(socket.id, (updatedRoom) => {
@@ -177,10 +242,14 @@ io.on('connection', (socket: Socket) => {
     });
 
     if (result.roomId && !result.roomClosed) {
+      const room = roomManager.getRoom(result.roomId);
       io.to(result.roomId).emit('MEMBER_LEFT', {
         socketId: socket.id,
         isHost: result.isHost
       });
+      if (room) {
+        io.to(result.roomId).emit('MEMBER_COUNT_UPDATED', { count: room.members.size });
+      }
     }
   });
 });

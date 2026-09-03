@@ -1,4 +1,6 @@
-export type ConnectionMode = 'DEFAULT' | 'CUSTOM_IP';
+export type ConnectionMode = 'DEFAULT' | 'CUSTOM_IP' | 'P2P';
+
+export type P2PStatus = 'DISCONNECTED' | 'CONNECTING' | 'CONNECTED' | 'FALLBACK';
 
 export type CoViewEvent = 
   | 'CREATE_ROOM' 
@@ -9,6 +11,12 @@ export type CoViewEvent =
   | 'SYNC_STATE' 
   | 'REDIRECT_ROOM' 
   | 'TOGGLE_PERMISSION' 
+  | 'SIGNAL_OFFER'
+  | 'SIGNAL_ANSWER'
+  | 'SIGNAL_ICE_CANDIDATE'
+  | 'P2P_FALLBACK'
+  | 'GET_ROOM_MEMBER_COUNT'
+  | 'MEMBER_COUNT_UPDATED'
   | 'ERROR';
 
 export interface SyncData {
@@ -18,6 +26,12 @@ export interface SyncData {
   paused?: boolean;
 }
 
+export interface JoinRequest {
+  requestId: string;
+  guestName: string;
+  timestamp: number;
+}
+
 export interface RoomStateInfo {
   roomId: string;
   isHost: boolean;
@@ -25,9 +39,41 @@ export interface RoomStateInfo {
   serverUrl: string;
   currentUrl?: string;
   mode?: ConnectionMode;
+  p2pStatus?: P2PStatus;
+  connectedPeerCount?: number;
+  serverlessHandshakeState?: 'IDLE' | 'AWAITING_ANSWER' | 'AWAITING_HOST_CONFIRM' | 'CONNECTED';
+  offerCode?: string;
+  answerCode?: string;
+  compositeCode?: string;
+  pendingJoinRequests?: JoinRequest[];
+  guestAwaitingApproval?: boolean;
 }
 
-// Content Script <-> Background 通訊 payload
+export interface SignalOfferData {
+  targetSocketId?: string;
+  senderSocketId?: string;
+  targetUserId?: string;
+  senderUserId?: string;
+  sdp: RTCSessionDescriptionInit;
+}
+
+export interface SignalAnswerData {
+  targetSocketId?: string;
+  senderSocketId?: string;
+  targetUserId?: string;
+  senderUserId?: string;
+  sdp: RTCSessionDescriptionInit;
+}
+
+export interface SignalIceCandidateData {
+  targetSocketId?: string;
+  senderSocketId?: string;
+  targetUserId?: string;
+  senderUserId?: string;
+  candidate: RTCIceCandidateInit;
+}
+
+// Content Script <-> Background <-> Offscreen 通訊 payload
 export interface ExtensionMessage {
   type: 
     | 'BG_CREATE_ROOM'
@@ -36,9 +82,38 @@ export interface ExtensionMessage {
     | 'BG_REDIRECT_ROOM'
     | 'BG_TOGGLE_PERMISSION'
     | 'BG_LEAVE_ROOM'
+    | 'BG_APPROVE_JOIN_REQUEST'
+    | 'BG_REJECT_JOIN_REQUEST'
     | 'CS_SYNC_RECEIVED'
     | 'CS_REDIRECT_RECEIVED'
     | 'CS_PERMISSION_UPDATED'
-    | 'GET_ROOM_STATE';
+    | 'CS_ROOM_STATE_CHANGED'
+    | 'CS_REQUEST_CURRENT_STATE'
+    | 'CS_JOIN_REQUESTS_UPDATED'
+    | 'GET_ROOM_STATE'
+    // Offscreen WebRTC 內部通訊訊息
+    | 'OFFSCREEN_INIT_P2P'
+    | 'OFFSCREEN_CLOSE_P2P'
+    | 'OFFSCREEN_SIGNAL_OFFER'
+    | 'OFFSCREEN_SIGNAL_ANSWER'
+    | 'OFFSCREEN_SIGNAL_ICE_CANDIDATE'
+    | 'OFFSCREEN_NEW_PEER'
+    | 'OFFSCREEN_SEND_DATA'
+    | 'OFFSCREEN_DATA_RECEIVED'
+    | 'OFFSCREEN_P2P_STATUS'
+    | 'OFFSCREEN_TRIGGER_FALLBACK'
+    // PeerJS 統一邀請碼與審核訊息
+    | 'OFFSCREEN_PEER_CREATE_ROOM'
+    | 'OFFSCREEN_PEER_JOIN_ROOM'
+    | 'OFFSCREEN_APPROVE_JOIN_REQUEST'
+    | 'OFFSCREEN_REJECT_JOIN_REQUEST'
+    | 'BG_P2P_GUEST_APPROVED'
+    // 相容性保留
+    | 'BG_SERVERLESS_CREATE_OFFER'
+    | 'BG_SERVERLESS_ACCEPT_OFFER'
+    | 'BG_SERVERLESS_ACCEPT_ANSWER'
+    | 'OFFSCREEN_SERVERLESS_CREATE_OFFER'
+    | 'OFFSCREEN_SERVERLESS_ACCEPT_OFFER'
+    | 'OFFSCREEN_SERVERLESS_ACCEPT_ANSWER';
   payload?: any;
 }

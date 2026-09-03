@@ -12,15 +12,17 @@
 
 ## 🌟 專案特色
 
-* 🎬 **跨平台支援**：現行版本支援 **YouTube** (含 SPA 頁面動態導航與廣告過濾) 與 **Bilibili** (動態 DOM 偵測)；雲端硬碟 (Google Drive 等) 與 WebRTC P2P 連線模式列入後續未來預期規劃。
+* 🎬 **跨平台支援**：現行版本支援 **YouTube** (含 SPA 頁面動態導航與廣告過濾) 與 **Bilibili** (動態 DOM 偵測)；雲端硬碟 (Google Drive 等) 列入後續未來預期規劃。
 * ⚡ **5 秒時間容差與單程延遲補償**：被動心跳控制在 5 秒差值內不強制跳轉進度（避免抖動卡頓），大於 5 秒強制定位；主動操作 (Play/Pause/Seek) 無視容差強制秒級同步。
-* 🌐 **兩大彈性連線架構**：
-  1. **預設連線 (Default Relay)**：連線至官方託管 / 本地伺服器，開箱即用免設定。
+* 🌐 **三大彈性連線架構**：
+  1. **預設中繼連線 (Default Relay)**：連線至預設中繼伺服器，開箱即用免設定。
   2. **自行輸入 IP (Self-Hosted IP)**：支援房主自架主機/NAS/私有雲，透過複合分享碼 (`IP:RoomID|Base64(URL)`) 實現觀眾無感對接。
+  3. **⚡ 純端對端直連 (WebRTC P2P Direct)**：完全不依賴任何本機或自架伺服器！直接利用 Google 公共 STUN 穿透 NAT，採用統一 6 碼邀請碼支援多人（不設人數上限）群體申請，房主控制面板即時彈出審核清單（支援一鍵允許/拒絕），並具備全模式 30 秒動態在線人數校準與離房原生播放器自動解鎖防護。
 * 🔒 **多重資安防衛**：
   * **網域白名單防禦**：房主進行網頁跳轉時，觀眾端自動比對 URL 正則白名單，自動攔截惡意釣魚連結。
   * **雙層權限 Drop 防線**：房主關閉「觀眾操作權限」時，非 Host 發送之同步請求會在後端伺服器端直接丟棄。
 * 🔋 **MV3 永不斷線保活機制**：採用 `chrome.runtime.connect` Port 長連接與 20 秒 `chrome.alarms` 心跳雙保險，克服 Chrome Service Worker 30 秒休眠限制。
+* 🖥️ **MV3 Offscreen 載體架構**：採用 Chrome 官方推薦之 `chrome.offscreen` Document 承載 WebRTC，解決 MV3 Service Worker 無法運行 `RTCPeerConnection` 之原生限制。
 
 ---
 
@@ -42,7 +44,8 @@ CoView/
 │
 ├── extension/                # 前端 Chrome 擴充套件 (React 18 + Vite + Tailwind CSS)
 │   ├── src/
-│   │   ├── background/       # Service Worker (Socket 連線、白名單過濾、保活)
+│   │   ├── background/       # Service Worker (Socket 連線、信令中繼、白名單過濾、保活)
+│   │   ├── offscreen/        # Offscreen Document (WebRTC RTCPeerConnection & DataChannel 引擎)
 │   │   ├── content/          # Content Script (YouTube/Bilibili Video DOM 綁定與補償演算法)
 │   │   ├── popup/            # React + Tailwind CSS 房主/觀眾控制面板
 │   │   ├── types/            # 前端通訊協定型別
@@ -182,7 +185,7 @@ jobs:
 
 ## 🔮 未來預期功能 (Roadmap)
 
-* [ ] **WebRTC 點對點直連模式 (Peer-to-Peer DataChannel)**：透過 WebRTC 建立瀏覽器端對端直連，免除伺服器中繼頻寬消耗，達成超低延遲同步。
+* [x] **WebRTC 點對點直連模式 (Peer-to-Peer DataChannel)**：透過 WebRTC 建立瀏覽器端對端直連，免除伺服器中繼頻寬消耗，達成超低延遲同步（已於 v2.3 實作完成）。
 * [ ] **雲端硬碟同步播放 (Cloud Drive)**：開發專屬授權代理與跨 Iframe 通訊管道，支援 Google Drive 等私有雲端影片同步。
 * [ ] **本地影片檔案 P2P 串流播放**：房主選取本機 `.mp4` 影片，透過 P2P 分塊串流讓房間成員即時觀看。
 * [ ] **房間即時語音對話 (Voice Chat)**：在觀影過程中提供低延遲背景語音通話。

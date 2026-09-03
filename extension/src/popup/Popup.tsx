@@ -5,20 +5,21 @@ import {
   Copy,
   Check,
   Shield,
-  Share2,
   Server,
   LogOut,
   ExternalLink,
   Loader2,
   Plus,
-  Radio,
-  Sparkles,
   ChevronDown,
-  RefreshCw,
-  Video
+  Video,
+  Zap,
+  Bell,
+  UserCheck,
+  UserX,
+  Clock
 } from 'lucide-react';
 import { RoomStateInfo, ConnectionMode } from '../types/protocol';
-import { DEFAULT_SERVER_URL, IS_LOCAL_DEV } from '../config';
+import { DEFAULT_SERVER_URL } from '../config';
 
 export default function Popup() {
   const [activeTab, setActiveTab] = useState<'create' | 'join'>('create');
@@ -27,8 +28,8 @@ export default function Popup() {
   const [loading, setLoading] = useState<boolean>(false);
   const [copied, setCopied] = useState<boolean>(false);
 
-  // 連線模式下拉選單 (預設為 DEFAULT 固定伺服器)
-  const [connectionMode, setConnectionMode] = useState<ConnectionMode>('DEFAULT');
+  // 連線選項模組狀態 (預設為 P2P 端對端直連)
+  const [connectionMode, setConnectionMode] = useState<ConnectionMode>('P2P');
   const [customServerUrl, setCustomServerUrl] = useState<string>('');
   const [shareCodeInput, setShareCodeInput] = useState<string>('');
   const [compositeCode, setCompositeCode] = useState<string>('');
@@ -47,22 +48,44 @@ export default function Popup() {
     chrome.runtime?.sendMessage?.({ type: 'GET_ROOM_STATE' }, (res) => {
       if (res?.roomState) {
         setRoomState(res.roomState);
+        if (res.roomState.compositeCode) {
+          setCompositeCode(res.roomState.compositeCode);
+        }
+      }
+      if (res?.compositeCode) {
+        setCompositeCode(res.compositeCode);
       }
       if (res?.userId) {
         setUserId(res.userId);
       }
     });
+
+    // 監聽房間狀態即時變更
+    const handleMessage = (msg: any) => {
+      if (msg.type === 'CS_ROOM_STATE_CHANGED') {
+        setRoomState(msg.payload);
+        if (msg.payload?.compositeCode) {
+          setCompositeCode(msg.payload.compositeCode);
+        }
+      }
+    };
+    chrome.runtime?.onMessage?.addListener(handleMessage);
+    return () => {
+      chrome.runtime?.onMessage?.removeListener(handleMessage);
+    };
   }, []);
 
   const isYouTube = activeTabUrl.includes('youtube.com/watch');
   const isBilibili = activeTabUrl.includes('bilibili.com/video') || activeTabUrl.includes('bilibili.com/bangumi');
   const isTargetSite = isYouTube || isBilibili;
 
+  // ----------------------------------------------------
+  // 1. 建房處理 (支援同一邀請碼邀請多人群體加入)
+  // ----------------------------------------------------
   const handleCreateRoom = () => {
     setLoading(true);
     setErrorMessage(null);
 
-    // 依連線模式決定伺服器網址
     let targetServerUrl = DEFAULT_SERVER_URL;
     if (connectionMode === 'CUSTOM_IP') {
       if (!customServerUrl.trim()) {
@@ -88,15 +111,19 @@ export default function Popup() {
           setRoomState(res.roomState);
           setCompositeCode(res.compositeCode);
         } else {
-          setErrorMessage(res?.error || '建立房間失敗，請確認伺服器是否已啟動');
+          setErrorMessage(res?.error || '建立房間失敗，請稍後再試');
         }
       }
     );
   };
 
+  // ----------------------------------------------------
+  // 2. 加房處理 (貼入同一組邀請碼即可送出審核申請)
+  // ----------------------------------------------------
   const handleJoinRoom = () => {
-    if (!shareCodeInput.trim()) {
-      setErrorMessage('請輸入房間代碼或複合分享碼');
+    const input = shareCodeInput.trim();
+    if (!input) {
+      setErrorMessage('請輸入 6 碼房間代碼或邀請碼');
       return;
     }
 
@@ -106,23 +133,51 @@ export default function Popup() {
     chrome.runtime.sendMessage(
       {
         type: 'BG_JOIN_ROOM',
-        payload: { shareCode: shareCodeInput.trim() }
+        payload: { shareCode: input, mode: connectionMode }
       },
       (res) => {
         setLoading(false);
         if (res?.success) {
           setRoomState(res.roomState);
         } else {
-          setErrorMessage(res?.error || '加入房間失敗，請確認代碼或伺服器連線');
+          setErrorMessage(res?.error || '加入房間失敗，請確認代碼是否正確');
         }
       }
     );
   };
 
+  // ----------------------------------------------------
+  // 3. 房主審核處理 (批准 / 拒絕入房申請)
+  // ----------------------------------------------------
+  const handleApproveRequest = (requestId: string) => {
+    chrome.runtime.sendMessage({
+      type: 'BG_APPROVE_JOIN_REQUEST',
+      payload: { requestId }
+    });
+  };
+
+  const handleRejectRequest = (requestId: string) => {
+    chrome.runtime.sendMessage({
+      type: 'BG_REJECT_JOIN_REQUEST',
+      payload: { requestId }
+    });
+  };
+
+  const handleApproveAll = () => {
+    if (!roomState?.pendingJoinRequests) return;
+    roomState.pendingJoinRequests.forEach((req) => {
+      handleApproveRequest(req.requestId);
+    });
+  };
+
+  // ----------------------------------------------------
+  // 4. 房內操作與控制
+  // ----------------------------------------------------
   const handleLeaveRoom = () => {
     chrome.runtime.sendMessage({ type: 'BG_LEAVE_ROOM' }, () => {
       setRoomState(null);
       setCompositeCode('');
+      setShareCodeInput('');
       setActiveTab('create');
     });
   };
@@ -155,27 +210,31 @@ export default function Popup() {
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const pendingRequests = roomState?.pendingJoinRequests || [];
+  const isGuestWaitingApproval = roomState && !roomState.isHost && roomState.guestAwaitingApproval;
+  const currentMemberCount = roomState?.connectedPeerCount || 1;
+
   return (
-    <div className="w-[380px] bg-slate-900 text-slate-100 p-4 font-sans border border-slate-800 rounded-xl shadow-2xl flex flex-col justify-between">
+    <div className="w-[380px] bg-slate-900 text-slate-100 p-4 font-sans border border-slate-800 rounded-xl shadow-2xl flex flex-col justify-between min-h-[480px]">
       {/* 頂部 Header */}
       <div>
         <div className="flex items-center justify-between border-b border-slate-800 pb-3 mb-3">
           <div className="flex items-center gap-2.5">
-            <div className="p-2 bg-gradient-to-br from-blue-600 to-indigo-600 rounded-xl text-white shadow-lg shadow-blue-500/25">
+            <div className="p-2 bg-gradient-to-br from-emerald-500 to-teal-600 rounded-xl text-white shadow-lg shadow-emerald-500/25">
               <Tv className="w-5 h-5" />
             </div>
             <div>
               <div className="flex items-center gap-1.5">
-                <h1 className="font-bold text-base tracking-wide bg-gradient-to-r from-blue-400 via-indigo-300 to-sky-300 bg-clip-text text-transparent">
+                <h1 className="font-bold text-base tracking-wide bg-gradient-to-r from-emerald-400 via-teal-300 to-sky-300 bg-clip-text text-transparent">
                   CoView (同映)
                 </h1>
                 <span className="px-1.5 py-0.5 text-[9px] font-semibold rounded bg-slate-800 text-slate-300 border border-slate-700">
-                  v2.1
+                  v2.4
                 </span>
               </div>
               <p className="text-[11px] text-slate-400 flex items-center gap-1 mt-0.5">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-                {IS_LOCAL_DEV ? 'Local 本機開發環境' : 'Cloud 官方環境'}
+                同步服務已就緒
               </p>
             </div>
           </div>
@@ -197,7 +256,7 @@ export default function Popup() {
         <div
           className={`mb-3 p-2 rounded-lg text-[11px] flex items-center justify-between border ${
             isTargetSite
-              ? 'bg-blue-950/40 text-blue-300 border-blue-800/50'
+              ? 'bg-emerald-950/40 text-emerald-300 border-emerald-800/50'
               : 'bg-amber-950/30 text-amber-300 border-amber-800/40'
           }`}
         >
@@ -208,11 +267,11 @@ export default function Popup() {
                 ? '🎬 YouTube 影片分頁已連線'
                 : isBilibili
                 ? '📺 Bilibili 影片分頁已連線'
-                : '💡 建議開啟 YouTube 或 Bilibili 網頁以進行同步'}
+                : '💡 請開啟 YouTube 或 Bilibili 網頁以進行同步觀影'}
             </span>
           </div>
           {isTargetSite && (
-            <span className="text-[10px] text-blue-400 font-semibold bg-blue-900/60 px-1.5 py-0.5 rounded border border-blue-700/50">
+            <span className="text-[10px] text-emerald-400 font-semibold bg-emerald-900/60 px-1.5 py-0.5 rounded border border-emerald-700/50">
               支援
             </span>
           )}
@@ -221,17 +280,44 @@ export default function Popup() {
         {/* 錯誤提示 */}
         {errorMessage && (
           <div className="mb-3 p-2.5 bg-red-500/10 border border-red-500/30 rounded-lg text-red-400 text-xs flex items-center justify-between">
-            <span>{errorMessage}</span>
-            <button onClick={() => setErrorMessage(null)} className="text-red-400 hover:text-red-300 px-1">
+            <span className="leading-relaxed">{errorMessage}</span>
+            <button onClick={() => setErrorMessage(null)} className="text-red-400 hover:text-red-300 px-1 font-bold">
               ✕
             </button>
           </div>
         )}
 
-        {/* 未在房間時：提供「建立房間」與「加入房間」明確頁籤 */}
-        {!roomState ? (
+        {/* ---------------------------------------------------- */}
+        {/* 情境 A: 觀眾送出申請，等待房主審核中                 */}
+        {/* ---------------------------------------------------- */}
+        {isGuestWaitingApproval ? (
+          <div className="space-y-3.5 bg-slate-800/90 p-5 rounded-xl border border-teal-500/50 shadow-xl text-center">
+            <div className="w-12 h-12 bg-teal-500/10 rounded-full flex items-center justify-center mx-auto border border-teal-500/30">
+              <Loader2 className="w-6 h-6 animate-spin text-teal-400" />
+            </div>
+            <div>
+              <h3 className="text-sm font-bold text-teal-300">入房申請已送出</h3>
+              <p className="text-xs text-slate-300 mt-1 leading-relaxed">
+                正在等待房主確認同意，房主批准後雙方將自動無縫連線開播！
+              </p>
+            </div>
+            <div className="p-2.5 bg-slate-900/80 rounded-lg border border-slate-700 text-xs font-mono text-slate-400 flex items-center justify-center gap-2">
+              <Clock className="w-3.5 h-3.5 text-teal-400" />
+              <span>房間代碼: <strong className="text-teal-300">{roomState.roomId}</strong></span>
+            </div>
+            <button
+              onClick={handleLeaveRoom}
+              className="w-full text-center text-xs text-slate-400 hover:text-red-400 pt-1"
+            >
+              ✕ 取消申請並返回
+            </button>
+          </div>
+        ) : !roomState ? (
+          /* ---------------------------------------------------- */
+          /* 情境 B: 未進入房間 (連線選項模組化面板)              */
+          /* ---------------------------------------------------- */
           <div>
-            {/* 核心功能分頁切換按鈕 */}
+            {/* 分頁切換按鈕 */}
             <div className="grid grid-cols-2 p-1 bg-slate-950/60 rounded-xl border border-slate-800 mb-3.5">
               <button
                 onClick={() => {
@@ -240,7 +326,7 @@ export default function Popup() {
                 }}
                 className={`py-2 text-xs font-semibold rounded-lg transition-all flex items-center justify-center gap-1.5 ${
                   activeTab === 'create'
-                    ? 'bg-blue-600 text-white shadow-md shadow-blue-600/30 font-bold'
+                    ? 'bg-emerald-600 text-white shadow-md shadow-emerald-600/30 font-bold'
                     : 'text-slate-400 hover:text-slate-200'
                 }`}
               >
@@ -255,7 +341,7 @@ export default function Popup() {
                 }}
                 className={`py-2 text-xs font-semibold rounded-lg transition-all flex items-center justify-center gap-1.5 ${
                   activeTab === 'join'
-                    ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/30 font-bold'
+                    ? 'bg-teal-600 text-white shadow-md shadow-teal-600/30 font-bold'
                     : 'text-slate-400 hover:text-slate-200'
                 }`}
               >
@@ -267,40 +353,54 @@ export default function Popup() {
             {/* TAB 1: 建立房間面板 */}
             {activeTab === 'create' && (
               <div className="space-y-3 bg-slate-800/50 p-3.5 rounded-xl border border-slate-700/60">
-                {/* 1. 連線方式下拉選單 */}
                 <div>
                   <label className="text-[11px] font-semibold text-slate-300 block mb-1.5 flex items-center justify-between">
                     <span className="flex items-center gap-1">
-                      <Server className="w-3.5 h-3.5 text-blue-400" />
+                      <Server className="w-3.5 h-3.5 text-emerald-400" />
                       連線方式 (Connection Mode)
                     </span>
-                    <span className="text-[10px] text-blue-400 font-normal">兩種選項</span>
+                    <span className="text-[10px] text-emerald-400 font-normal">多人群組推薦 P2P</span>
                   </label>
 
                   <div className="relative">
                     <select
                       value={connectionMode}
                       onChange={(e) => setConnectionMode(e.target.value as ConnectionMode)}
-                      className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100 focus:outline-none focus:border-blue-500 transition appearance-none cursor-pointer pr-8"
+                      className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100 focus:outline-none focus:border-emerald-500 transition appearance-none cursor-pointer pr-8"
                     >
-                      <option value="DEFAULT">
-                        1. 預設固定伺服器 ({IS_LOCAL_DEV ? 'Local 本地主機' : '官方雲端'})
-                      </option>
-                      <option value="CUSTOM_IP">2. 自行輸入 IP (用於自架主機 / LAN)</option>
+                      <option value="P2P">⚡ 1. 純端對端直連 (WebRTC P2P - 不限人數)</option>
+                      <option value="DEFAULT">2. 預設中繼伺服器 (官方中繼)</option>
+                      <option value="CUSTOM_IP">3. 自行輸入 IP (自架主機 / LAN)</option>
                     </select>
                     <ChevronDown className="w-4 h-4 text-slate-400 absolute right-2.5 top-2.5 pointer-events-none" />
                   </div>
                 </div>
 
-                {/* 2. 模式對應參數卡片 */}
+                {/* 模式說明卡片 */}
+                {connectionMode === 'P2P' && (
+                  <div className="p-2.5 bg-emerald-950/30 border border-emerald-800/50 rounded-lg space-y-1.5">
+                    <div className="flex items-center justify-between text-[11px]">
+                      <span className="text-emerald-400 font-semibold flex items-center gap-1">
+                        <Zap className="w-3.5 h-3.5" /> WebRTC P2P 統一邀請碼直連
+                      </span>
+                      <span className="text-[10px] text-emerald-300 bg-emerald-900/60 px-1.5 py-0.5 rounded border border-emerald-700/50">
+                        不設人數上限
+                      </span>
+                    </div>
+                    <p className="text-[10px] text-slate-300 leading-relaxed">
+                      同一組邀請碼可發送給多位好友直接申請加入，房主收到通知後一鍵審核，全房即可透過加密星狀拓撲低延遲直連！
+                    </p>
+                  </div>
+                )}
+
                 {connectionMode === 'DEFAULT' && (
                   <div className="p-2.5 bg-slate-950/70 border border-slate-800 rounded-lg space-y-1">
                     <div className="flex items-center justify-between text-[11px]">
-                      <span className="text-slate-400">固定伺服器位置:</span>
-                      <span className="font-mono text-emerald-400 font-semibold">{DEFAULT_SERVER_URL}</span>
+                      <span className="text-slate-400">中繼伺服器狀態:</span>
+                      <span className="text-emerald-400 font-semibold">線上就緒</span>
                     </div>
-                    <p className="text-[10px] text-slate-500">
-                      開箱即用，免額外設定，由系統提供之中央主機中繼同步播放。
+                    <p className="text-[10px] text-slate-400">
+                      連線至預設中繼伺服器，提供穩定開箱即用的房間同步服務。
                     </p>
                   </div>
                 )}
@@ -312,23 +412,20 @@ export default function Popup() {
                     </label>
                     <input
                       type="text"
-                      placeholder="例如: http://192.168.1.100:3000"
+                      placeholder="例如: https://coview.example.com 或 http://192.168.1.100:3000"
                       value={customServerUrl}
                       onChange={(e) => setCustomServerUrl(e.target.value)}
                       className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:border-blue-500 transition"
                     />
-                    <p className="text-[10px] text-slate-400">
-                      建房後將生成複合分享碼，訪客直接貼入即可自動切換至該 IP 連線。
-                    </p>
                   </div>
                 )}
 
-                {/* 3. 建立房間按鈕 (顯眼大按鈕) */}
+                {/* 建立按鈕 */}
                 <button
                   id="btn-create-room"
                   onClick={handleCreateRoom}
                   disabled={loading}
-                  className="w-full mt-2 py-2.5 px-4 bg-gradient-to-r from-blue-600 via-indigo-600 to-blue-600 hover:from-blue-500 hover:to-indigo-500 active:from-blue-700 active:to-indigo-700 text-white font-bold rounded-xl text-xs shadow-lg shadow-blue-600/30 transition-all flex items-center justify-center gap-2 border border-blue-400/30 cursor-pointer disabled:opacity-50"
+                  className="w-full mt-2 py-2.5 px-4 bg-gradient-to-r from-emerald-600 via-teal-600 to-emerald-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold rounded-xl text-xs shadow-lg shadow-emerald-600/30 transition-all flex items-center justify-center gap-2 border border-emerald-400/30 cursor-pointer disabled:opacity-50"
                 >
                   {loading ? (
                     <>
@@ -337,8 +434,10 @@ export default function Popup() {
                     </>
                   ) : (
                     <>
-                      <Plus className="w-4 h-4" />
-                      <span className="text-sm">🚀 立即建立房間 (Create Room)</span>
+                      <Zap className="w-4 h-4" />
+                      <span className="text-sm">
+                        {connectionMode === 'P2P' ? '⚡ 建立 P2P 房間 (生成統一邀請碼)' : '🚀 立即建立房間'}
+                      </span>
                     </>
                   )}
                 </button>
@@ -350,86 +449,153 @@ export default function Popup() {
               <div className="space-y-3 bg-slate-800/50 p-3.5 rounded-xl border border-slate-700/60">
                 <div>
                   <label className="text-[11px] font-semibold text-slate-300 block mb-1.5 flex items-center gap-1">
-                    <Users className="w-3.5 h-3.5 text-indigo-400" />
-                    房間代碼或分享碼
+                    <Users className="w-3.5 h-3.5 text-teal-400" />
+                    貼入房間代碼 / 邀請碼
                   </label>
                   <input
                     type="text"
-                    placeholder="貼入 6 碼代碼 (如 X7A9B2) 或複合碼"
+                    placeholder="輸入房主提供的 6 碼代碼 (例如: 892301)"
                     value={shareCodeInput}
                     onChange={(e) => setShareCodeInput(e.target.value)}
-                    className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition font-mono"
+                    className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-teal-500 transition font-mono tracking-wider"
                   />
                   <p className="text-[10px] text-slate-400 mt-1">
-                    支援一般 6 碼或自架複合碼 (IP:...)，貼上後自動解析端點。
+                    輸入房主分享的 6 碼代碼，送出申請後房主批准即可自動直連同步。
                   </p>
-                </div>
 
-                <button
-                  id="btn-join-room"
-                  onClick={handleJoinRoom}
-                  disabled={loading}
-                  className="w-full py-2.5 px-4 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 active:from-indigo-700 active:to-violet-700 text-white font-bold rounded-xl text-xs shadow-lg shadow-indigo-600/30 transition-all flex items-center justify-center gap-2 border border-indigo-400/30 cursor-pointer disabled:opacity-50"
-                >
-                  {loading ? (
-                    <>
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                      <span>正在加入房間...</span>
-                    </>
-                  ) : (
-                    <>
-                      <Users className="w-4 h-4" />
-                      <span className="text-sm">🔑 加入同步房間 (Join Room)</span>
-                    </>
-                  )}
-                </button>
+                  <button
+                    id="btn-join-room"
+                    onClick={handleJoinRoom}
+                    disabled={loading}
+                    className="w-full mt-3 py-2.5 px-4 bg-gradient-to-r from-teal-600 to-emerald-600 hover:from-teal-500 hover:to-emerald-500 text-white font-bold rounded-xl text-xs shadow-lg shadow-teal-600/30 transition-all flex items-center justify-center gap-2 border border-teal-400/30 cursor-pointer disabled:opacity-50"
+                  >
+                    {loading ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        <span>正在連線申請中...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Zap className="w-4 h-4" />
+                        <span className="text-sm">🔑 申請加入房間 (Join Room)</span>
+                      </>
+                    )}
+                  </button>
+                </div>
               </div>
             )}
           </div>
         ) : (
-          /* 已在房間時的控制面板 */
+          /* ---------------------------------------------------- */
+          /* 情境 C: 統一觀影操作模組 (全模式通用，每30秒動態校準) */
+          /* ---------------------------------------------------- */
           <div className="space-y-3">
-            {/* 房間代碼卡片 */}
-            <div className="bg-slate-800/80 p-3.5 rounded-xl border border-slate-700 space-y-2.5">
+            {/* 1. 統一頂部房間資訊卡片 */}
+            <div className="bg-slate-800/80 p-3.5 rounded-xl border border-slate-700 space-y-2.5 shadow-xl">
               <div className="flex items-center justify-between">
                 <div>
                   <span className="text-[10px] text-slate-400 uppercase tracking-wider font-bold">
-                    房間代碼 (Room Code)
+                    房間代碼 (邀請碼)
                   </span>
-                  <p className="text-xl font-mono font-extrabold text-blue-400 tracking-wider">
+                  <p className="text-2xl font-mono font-extrabold text-emerald-400 tracking-wider mt-0.5">
                     {roomState.roomId}
                   </p>
                 </div>
 
+                {/* 複製分享碼按鈕 */}
                 <button
-                  onClick={() =>
-                    copyToClipboard(
-                      compositeCode || `${roomState.roomId}|${btoa(roomState.serverUrl)}`
-                    )
-                  }
-                  className="bg-blue-600/20 hover:bg-blue-600/30 border border-blue-500/30 text-blue-300 px-3 py-1.5 rounded-lg text-xs flex items-center gap-1.5 transition active:scale-95 font-medium"
+                  id="btn-copy-room-code"
+                  onClick={() => {
+                    const codeToCopy =
+                      roomState.mode === 'P2P'
+                        ? roomState.roomId
+                        : compositeCode ||
+                          roomState.compositeCode ||
+                          (roomState.mode === 'CUSTOM_IP'
+                            ? `IP:${roomState.roomId}|${btoa(roomState.serverUrl)}`
+                            : roomState.roomId);
+                    copyToClipboard(codeToCopy);
+                  }}
+                  className="bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/30 text-emerald-300 px-3 py-1.5 rounded-lg text-xs flex items-center gap-1.5 transition active:scale-95 font-semibold cursor-pointer shadow-sm"
                 >
                   {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                  {copied ? '已複製分享碼' : '複製分享碼'}
+                  {copied ? '已複製代碼！' : '複製邀請碼'}
                 </button>
               </div>
 
+              {/* 核心要求：全模式統一的人數顯示與 30 秒自動校準標示 */}
               <div className="text-[11px] text-slate-400 flex items-center justify-between border-t border-slate-700/60 pt-2">
-                <span className="truncate max-w-[200px]" title={roomState.serverUrl}>
-                  主機: {roomState.serverUrl}
+                <span className="flex items-center gap-1 font-medium text-slate-300">
+                  <Users className="w-3.5 h-3.5 text-emerald-400" />
+                  房內成員: <strong className="text-emerald-400 text-xs">{currentMemberCount} 人</strong>
+                  <span className="text-[9px] text-slate-500 ml-1">(每30秒自動校準)</span>
                 </span>
-                <span className="flex items-center gap-1 text-emerald-400 font-semibold">
-                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-                  連線同步中
+                <span className="text-emerald-400 font-semibold flex items-center gap-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                  {roomState.mode === 'P2P' ? 'P2P 直連中' : '中繼連線中'}
                 </span>
               </div>
             </div>
 
-            {/* 房主專屬控制區 */}
+            {/* 2. 房主審核通知佇列 (支援多位朋友同時申請) */}
+            {roomState.isHost && pendingRequests.length > 0 && (
+              <div className="bg-amber-950/40 border border-amber-500/50 p-3 rounded-xl space-y-2 shadow-lg animate-in fade-in slide-in-from-top-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-amber-300 flex items-center gap-1.5">
+                    <Bell className="w-4 h-4 text-amber-400 animate-bounce" />
+                    入房審核申請 ({pendingRequests.length} 位等待中)
+                  </span>
+                  {pendingRequests.length > 1 && (
+                    <button
+                      onClick={handleApproveAll}
+                      className="text-[10px] text-emerald-400 font-bold hover:underline cursor-pointer"
+                    >
+                      全部允許
+                    </button>
+                  )}
+                </div>
+
+                <div className="space-y-1.5 max-h-40 overflow-y-auto pr-0.5">
+                  {pendingRequests.map((req) => (
+                    <div
+                      key={req.requestId}
+                      className="flex items-center justify-between p-2 bg-slate-900/90 rounded-lg border border-slate-700/80"
+                    >
+                      <div className="truncate max-w-[170px]">
+                        <span className="text-xs font-medium text-slate-200 block truncate">
+                          {req.guestName}
+                        </span>
+                        <span className="text-[9px] text-slate-500">
+                          {new Date(req.timestamp).toLocaleTimeString()} 申請
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <button
+                          onClick={() => handleApproveRequest(req.requestId)}
+                          className="px-2 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-[10px] font-bold flex items-center gap-0.5 shadow transition"
+                        >
+                          <UserCheck className="w-3 h-3" />
+                          允許
+                        </button>
+                        <button
+                          onClick={() => handleRejectRequest(req.requestId)}
+                          className="px-2 py-1 bg-red-600/70 hover:bg-red-600 text-white rounded text-[10px] font-bold flex items-center gap-0.5 transition"
+                        >
+                          <UserX className="w-3 h-3" />
+                          拒絕
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* 3. 統一房主權限管理面板 */}
             {roomState.isHost && (
               <div className="bg-slate-800/50 p-3 rounded-xl border border-slate-800 space-y-2.5">
                 <h3 className="text-xs font-semibold text-slate-300 flex items-center gap-1.5">
-                  <Shield className="w-3.5 h-3.5 text-blue-400" /> 房主權限管理
+                  <Shield className="w-3.5 h-3.5 text-emerald-400" /> 房主權限管理
                 </h3>
 
                 {/* 允許觀眾操作切換 */}
@@ -438,7 +604,7 @@ export default function Popup() {
                   <button
                     onClick={() => handleTogglePermission(!roomState.allowGuestControl)}
                     className={`w-10 h-5 flex items-center rounded-full p-1 transition duration-300 ${
-                      roomState.allowGuestControl ? 'bg-blue-600' : 'bg-slate-700'
+                      roomState.allowGuestControl ? 'bg-emerald-600' : 'bg-slate-700'
                     }`}
                   >
                     <div
@@ -452,7 +618,7 @@ export default function Popup() {
                 {/* 強制網頁跳轉同步 */}
                 <button
                   onClick={handleSyncCurrentTab}
-                  className="w-full bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 border border-indigo-500/30 font-medium py-2 rounded-lg text-xs transition flex items-center justify-center gap-1.5"
+                  className="w-full bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 font-medium py-2 rounded-lg text-xs transition flex items-center justify-center gap-1.5"
                 >
                   <ExternalLink className="w-3.5 h-3.5" />
                   將全房觀眾跳轉至當前網頁
@@ -460,13 +626,13 @@ export default function Popup() {
               </div>
             )}
 
-            {/* 房內快捷操作按鈕 */}
+            {/* 4. 統一房內操作按鈕 */}
             <div className="grid grid-cols-2 gap-2 pt-1">
               <button
                 onClick={handleLeaveRoom}
                 className="py-2 px-3 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-lg text-xs transition flex items-center justify-center gap-1.5 font-medium"
               >
-                <Plus className="w-3.5 h-3.5 text-blue-400" />
+                <Plus className="w-3.5 h-3.5 text-emerald-400" />
                 建立新房間
               </button>
 
@@ -485,9 +651,8 @@ export default function Popup() {
       {/* 底部 Footer */}
       <div className="mt-4 pt-2.5 border-t border-slate-800/80 text-center text-[10px] text-slate-500 flex items-center justify-between">
         <span>CoView Engine • 支援 YouTube / Bilibili</span>
-        <span className="font-mono text-slate-400">{IS_LOCAL_DEV ? 'Local:3000' : 'Official'}</span>
+        <span className="font-mono text-emerald-400 font-semibold">WebRTC P2P Direct</span>
       </div>
     </div>
   );
 }
-

@@ -1,13 +1,13 @@
-# CoView (同映) - 跨平台網頁影片同步播放系統完整開發規格書 (v2.2)
+# CoView (同映) - 跨平台網頁影片同步播放系統完整開發規格書 (v2.3)
 
-> **環境與用途說明**：本文件專為 **Google Antigravity** 及 AI 開發助理設計。內含雙模彈性連線架構（預設官方中繼 / 自架 IP 模式）、核心同步演算法、MV3 保活防禦、邊界條件、WebSocket 通訊協定（Type Definitions）以及未來預期功能規劃（含 WebRTC P2P 直連、雲端硬碟滲透等）。請嚴格依據此規格書進行前後端程式碼生成與維護。
+> **環境與用途說明**：本文件專為 **Google Antigravity** 及 AI 開發助理設計。內含三模彈性連線架構（預設官方中繼 / 自架 IP 模式 / WebRTC P2P 直連）、核心同步演算法、MV3 Offscreen 載體、保活防禦、邊界條件、WebSocket 通訊協定（Type Definitions）以及未來預期功能規劃。請嚴格依據此規格書進行前後端程式碼生成與維護。
 
 ---
 
 ## 1. 專案概述與核心範疇
 
 ### 1.1 系統目標
-本專案旨在開發一款瀏覽器擴充套件（Chrome Extension V3），配合彈性連線機制（預設中繼、自架伺服器），實現跨地理位置、跨網頁、低延遲的網頁影片「即時同步播放」服務。
+本專案旨在開發一款瀏覽器擴充套件（Chrome Extension V3），配合彈性連線機制（預設中繼、自架伺服器、WebRTC P2P 直連），實現跨地理位置、跨網頁、低延遲的網頁影片「即時同步播放」服務。
 
 ### 1.2 支援目標網站（當前版本）
 1. **YouTube**：標準網頁版影片播放頁（處理 SPA 網頁架構與廣告過濾）。
@@ -15,26 +15,26 @@
 
 > [!NOTE]
 > **功能範疇調整說明**：
-> 1. **WebRTC P2P 點對點連線**：經架構評估，現階段專注穩定 WebSocket 雙模架構（預設固定中繼與自架 IP），WebRTC 直連部分**已移入第 10 章「未來預期功能規劃」**作為後續擴充項目。
-> 2. **雲端硬碟**：Google Drive 內嵌影片同步功能同屬中長期規劃，詳見第 10 章。
+> 1. **WebRTC P2P 點對點連線**：已於 **v2.3 正式實裝**，採用 Chrome MV3 官方推薦之 `chrome.offscreen` Document 承載 WebRTC DataChannel，並結合現有 Socket 伺服器進行初始 SDP 信令交換與自動降級機制。
+> 2. **雲端硬碟**：Google Drive 內嵌影片同步功能列為中長期規劃，詳見第 10 章。
 
 ---
 
 ## 2. 系統架構與技術棧 (Tech Stack)
 
 ### 2.1 整體系統拓撲架構
-系統現行版本支援「伺服器中繼（預設官方與自架 IP）」架構：
-
-```text
-【模式 1 & 2：伺服器中繼模式 (Default Relay & Self-Hosted IP)】
-[影片 DOM] <--> [Content Script] <--> [Background SW] <--> [WebSocket Server] <--> [其餘成員 Background SW]
-```
+系統支援兩大傳輸架構：
+1. **伺服器中繼架構 (Default Relay & Self-Hosted IP)**：
+   `[影片 DOM] <--> [Content Script] <--> [Background SW] <--> [WebSocket Server] <--> [其餘成員 Background SW]`
+2. **WebRTC P2P 端對端直連架構 (DataChannel Mode)**：
+   `[影片 DOM] <--> [Content Script] <--> [Background SW] <--> [Offscreen Document (WebRTC)] === [DataChannel 直連] === [其餘成員 Offscreen]`
 
 ### 2.2 前端套件 (Chrome Extension V3)
 * **核心框架**: React 18 + TypeScript + Vite
 * **編譯工具**: `@crxjs/vite-plugin` (支援 Extension MV3 的 HMR 熱重載與編譯)
 * **樣式庫**: Tailwind CSS
-* **通訊客戶端**: `socket.io-client`（原生 WebSocket 傳輸通道直連）
+* **通訊客戶端**: `socket.io-client`（WebSocket 傳輸）與原生 `RTCPeerConnection`（位於 Offscreen Document）
+* **載體架構**: `chrome.offscreen` API（解決 MV3 Background Service Worker 不支援 WebRTC 原生 API 之限制）
 
 ### 2.3 後端伺服器 (Official & Self-Hosted Server)
 * **執行環境**: Node.js 20+ / TypeScript
@@ -79,16 +79,25 @@
   3. 觀眾端套件自動將 WebSocket 連線位置動態切換至解碼後的自訂 IP，並直接發送加入房間請求，觀眾**完全不需要手動輸入 IP**。
 * **優點**：資料不經第三方主機、區域網路內極低延遲、不受官方伺服器頻寬與維護限制。
 
-### 3.3 兩種連線選項特性對比表
+### 3.3 選項三：WebRTC 純端對端直連模式 (Serverless P2P Copy-Paste Mode)
+* **定位**：100% 零伺服器依賴、極致低延遲、最高隱私。
+* **NAT 穿透**：配置 Google 4 組公共 STUN 伺服器 (`stun:stun.l.google.com:19302`)，免除自建伺服器。
+* **信令交換機制 (方案 C - 兩階段剪貼簿握手)**：
+  1. **步驟 1 (房主)**：房主點擊「建立 Serverless P2P 房間」，Offscreen 收集完整 ICE 候選項後，使用瀏覽器原生 `CompressionStream('gzip')` 壓縮 SDP 生成 `P2P-OFFER:base64...` 邀請碼，由房主複製傳送給好友。
+  2. **步驟 2 (觀眾)**：觀眾貼入邀請碼，Offscreen 解壓後產生對應之 `P2P-ANSWER:base64...` 回執碼，觀眾複製傳回房主。
+  3. **步驟 3 (房主確認)**：房主貼入回執碼，雙方 RTCDataChannel 通道立即開啟 (`open`)。
+* **優點**：完全不需在本機開啟 Node.js 伺服器（不依賴 `localhost:3000`），高頻同步事件完全端對端直連傳輸。
 
-| 比較項目 | 1. 預設連線模式 | 2. 自行輸入 IP (自架) |
-| :--- | :--- | :--- |
-| **主機依賴** | 依賴官方/本地伺服器 | 依賴使用者自建伺服器 |
-| **同步延遲** | 良好 (~50-150ms) | 極佳 (內網 ~5-20ms) |
-| **設定門檻** | ★☆☆☆☆ (零門檻) | ★★★☆☆ (需自架後端) |
-| **伺服器頻寬消耗**| 由官方/本地承擔 | 由自架者承擔 |
-| **跨網段穿透率** | 100% | 需開 Port 或同內網 | ~85% (視 NAT 形態而定) |
-| **隱私安全性** | 伺服器可知房間狀態 | 完全私有控制 | 端對端直連，高隱私 |
+### 3.4 三種連線選項特性對比表
+
+| 比較項目 | 1. 預設連線模式 | 2. 自行輸入 IP (自架) | 3. ⚡ Serverless P2P 直連 (方案 C) |
+| :--- | :--- | :--- | :--- |
+| **主機依賴** | 依賴官方/本地伺服器 | 依賴使用者自建伺服器 | **100% 零主機依賴 (免開伺服器)** |
+| **信令通道** | WebSocket 伺服器 | WebSocket 伺服器 | 通訊軟體一次性貼上交換 (GZIP) |
+| **NAT 穿透** | 伺服器中繼 | 伺服器中繼 / LAN | **Google 公共 STUN 伺服器** |
+| **同步延遲** | 良好 (~50-150ms) | 極佳 (內網 ~5-20ms) | **極致 (~10-40ms 網際網路直連)** |
+| **伺服器頻寬消耗**| 承擔全量同步指令 | 由自架者全量承擔 | **0 頻寬消耗** |
+| **隱私安全性** | 伺服器可知房間狀態 | 完全私有控制 | **端對端直連，最高隱私** |
 
 ---
 
@@ -306,30 +315,8 @@ AI 在編寫實作代碼時，請確認完全覆蓋以下異常邊界：
 
 以下項目列為中長期預期功能，當前核心版本暫不實裝，但系統架構設計需保留介面以利平滑擴充：
 
-### 10.1 WebRTC 點對點直連模式 (Peer-to-Peer DataChannel Mode)
-* **需求背景**：適合極度追求低延遲、中央伺服器零負載與高度隱私的觀影需求。
-* **傳輸機制**：
-  - 瀏覽器與瀏覽器之間透過 **WebRTC DataChannel** (`ordered: true`, `maxRetransmits: 3`) 直接傳輸同步指令。
-  - 房主作為 **Host Peer**，與進入房間的每一位 **Guest Peer** 建立一對一的 RTCDataChannel 星狀拓撲通道。
-* **信令交換機制 (預留型別)**：
-  ```typescript
-  export interface SignalOfferMsg {
-    event: 'SIGNAL_OFFER';
-    roomId: string;
-    data: { targetUserId: string; senderUserId: string; sdp: RTCSessionDescriptionInit; };
-  }
-  export interface SignalAnswerMsg {
-    event: 'SIGNAL_ANSWER';
-    roomId: string;
-    data: { targetUserId: string; senderUserId: string; sdp: RTCSessionDescriptionInit; };
-  }
-  export interface SignalIceCandidateMsg {
-    event: 'SIGNAL_ICE_CANDIDATE';
-    roomId: string;
-    data: { targetUserId: string; senderUserId: string; candidate: RTCIceCandidateInit; };
-  }
-  ```
-* **NAT 穿透與回退策略**：配置公共 STUN 伺服器；遇對稱型 NAT 阻擋時自動回退至伺服器中繼模式。
+### 10.1 WebRTC 點對點直連模式 (已於 v2.3 實裝)
+* 系統已正式實裝 WebRTC P2P DataChannel 星狀拓撲直連與 MV3 Offscreen Document 載體架構，規格詳見第 3.3 節。
 
 ### 10.2 雲端硬碟同步播放 (Cloud Drive Integration)
 * **需求背景**：使用者期望與好友同步觀看儲存於雲端硬碟（Google Drive、OneDrive、Dropbox）上的私有影片。

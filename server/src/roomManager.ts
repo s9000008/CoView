@@ -1,4 +1,4 @@
-import { RoomState, RoomMember } from './types';
+import { RoomState, RoomMember, ConnectionMode } from './types';
 
 export class RoomManager {
   private rooms: Map<string, RoomState> = new Map();
@@ -26,7 +26,8 @@ export class RoomManager {
     socketId: string,
     userId: string,
     currentUrl: string,
-    isSelfHosted: boolean
+    isSelfHosted: boolean,
+    mode: ConnectionMode = 'DEFAULT'
   ): RoomState {
     const roomId = this.generateRoomId();
     const hostMember: RoomMember = {
@@ -43,6 +44,7 @@ export class RoomManager {
       currentUrl,
       allowGuestControl: false,
       isSelfHosted,
+      mode,
       members: new Map([[socketId, hostMember]])
     };
 

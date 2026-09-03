@@ -20,8 +20,9 @@ try {
 // ----------------------------------------------------
 let targetVideo: HTMLVideoElement | null = null;
 let programmaticUntilTimestamp = 0;
-let roomState: { isHost: boolean; allowGuestControl: boolean } = {
-  isHost: true,
+let roomState: { isInRoom: boolean; isHost: boolean; allowGuestControl: boolean } = {
+  isInRoom: false,
+  isHost: false,
   allowGuestControl: false
 };
 let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
@@ -67,7 +68,7 @@ function isYouTubeAdPlaying(): boolean {
 function startHeartbeat() {
   stopHeartbeat();
   heartbeatTimer = setInterval(() => {
-    if (!targetVideo || !roomState.isHost) return;
+    if (!targetVideo || !roomState.isInRoom || !roomState.isHost) return;
     if (isYouTubeAdPlaying()) return;
 
     chrome.runtime.sendMessage({
@@ -93,7 +94,7 @@ function stopHeartbeat() {
 // 5. 5 秒容差與單程延遲補償演算法 (規格 4.2)
 // ----------------------------------------------------
 function applySyncState(data: SyncData) {
-  if (!targetVideo) return;
+  if (!targetVideo || !roomState.isInRoom) return;
   if (isYouTubeAdPlaying()) {
     console.log('[CoView] 廣告播放中，忽略同步事件');
     return;
@@ -169,6 +170,8 @@ function attachVideoListeners(video: HTMLVideoElement) {
   console.log('[CoView] 成功綁定 Target Video DOM');
 
   video.addEventListener('play', () => {
+    // 未在房間內，徹底放行使用者原生播放！
+    if (!roomState.isInRoom) return;
     if (isProgrammatic() || isYouTubeAdPlaying()) return;
 
     if (!roomState.isHost && !roomState.allowGuestControl) {
@@ -190,6 +193,8 @@ function attachVideoListeners(video: HTMLVideoElement) {
   });
 
   video.addEventListener('pause', () => {
+    // 未在房間內，徹底放行使用者原生暫停！
+    if (!roomState.isInRoom) return;
     if (isProgrammatic() || isYouTubeAdPlaying()) return;
 
     if (!roomState.isHost && !roomState.allowGuestControl) {
@@ -211,7 +216,7 @@ function attachVideoListeners(video: HTMLVideoElement) {
   });
 
   function broadcastSeek() {
-    if (!targetVideo) return;
+    if (!targetVideo || !roomState.isInRoom) return;
     // 若跳轉前處於播放狀態，或當前已開播，則目標狀態認定為播放中 (paused: false)
     const isPaused = targetVideo.paused && !wasPlayingBeforeSeek;
 
@@ -227,6 +232,7 @@ function attachVideoListeners(video: HTMLVideoElement) {
   }
 
   video.addEventListener('seeking', () => {
+    if (!roomState.isInRoom) return;
     if (isProgrammatic() || isYouTubeAdPlaying()) return;
     if (!roomState.isHost && !roomState.allowGuestControl) return;
 
@@ -242,6 +248,7 @@ function attachVideoListeners(video: HTMLVideoElement) {
   });
 
   video.addEventListener('seeked', () => {
+    if (!roomState.isInRoom) return;
     if (isProgrammatic() || isYouTubeAdPlaying()) return;
     if (!roomState.isHost && !roomState.allowGuestControl) return;
 
@@ -254,6 +261,7 @@ function attachVideoListeners(video: HTMLVideoElement) {
 
   // 規格 9: 緩衝卡頓處理 (waiting) - 5 秒防抖，避免網路輕微波動造成過度頻繁暫停
   video.addEventListener('waiting', () => {
+    if (!roomState.isInRoom) return;
     if (isProgrammatic() || isYouTubeAdPlaying() || video.paused) return;
     if (!roomState.isHost && !roomState.allowGuestControl) return;
 
@@ -318,10 +326,17 @@ window.addEventListener('yt-navigate-finish', () => {
 // 向 Background 獲取最新狀態
 chrome.runtime.sendMessage({ type: 'GET_ROOM_STATE' }, (res) => {
   if (res?.roomState) {
-    roomState = res.roomState;
+    roomState = {
+      isInRoom: true,
+      isHost: res.roomState.isHost,
+      allowGuestControl: res.roomState.allowGuestControl
+    };
     if (roomState.isHost) {
       startHeartbeat();
     }
+  } else {
+    roomState = { isInRoom: false, isHost: false, allowGuestControl: false };
+    stopHeartbeat();
   }
 });
 
@@ -334,19 +349,20 @@ chrome.runtime.onMessage.addListener((request) => {
   } else if (type === 'CS_ROOM_STATE_CHANGED') {
     if (payload) {
       roomState = {
+        isInRoom: true,
         isHost: payload.isHost,
         allowGuestControl: payload.allowGuestControl
       };
-      console.log('[CoView] 房間狀態即時更新:', roomState);
+      console.log('[CoView] 房間狀態即時更新 (已在房間中):', roomState);
       if (roomState.isHost) {
         startHeartbeat();
       } else {
         stopHeartbeat();
       }
     } else {
-      roomState = { isHost: false, allowGuestControl: false };
+      roomState = { isInRoom: false, isHost: false, allowGuestControl: false };
       stopHeartbeat();
-      console.log('[CoView] 已退出房間，停止心跳');
+      console.log('[CoView] 已退出房間，完全釋放播放器控制權限');
     }
   } else if (type === 'CS_REQUEST_CURRENT_STATE') {
     // 規格 4.1 Host 被要求回報狀態給新進人員
