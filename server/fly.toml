@@ -1,54 +1,36 @@
-# ==============================================================================
-# CoView WebSocket Server - Fly.io 公開開源版設定檔 (fly.toml)
-# 
-# 💰 成本控制：鎖定 Fly.io $0/月 小額豁免門檻 (<$5/mo Waiver)
-# 🔒 開源安全：嚴禁在此填寫任何真實密鑰，敏感參數請使用 `fly secrets set`
-# ⚡ 連線保證：關閉自動休眠 (auto_stop_machines = 'off') 以維護 WebSocket 長連線
-# ==============================================================================
+# fly.toml app configuration file generated for coview on 2026-09-03T16:10:07Z
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
 
-app = "coview-server"
-primary_region = "nrt" # 推薦使用亞太低延遲節點：nrt (東京), sin (新加坡), hkg (香港)
+app = 'coview'
+primary_region = 'nrt'
 
 [build]
-  dockerfile = "Dockerfile"
+  dockerfile = 'Dockerfile'
 
 [http_service]
-  internal_port = 3000
+  internal_port = 8080
   force_https = true
-  # 關鍵：關閉自動休眠，防止 WebSocket 連線因閒置被自動殺死
   auto_stop_machines = 'off'
   auto_start_machines = true
-  # 強制維持單台機器在線，避免自動水平擴展產生多台機器費用
   min_machines_running = 1
-  processes = ["app"]
+  processes = ['app']
 
   [http_service.concurrency]
-    type = "connections"
+    type = 'connections'
     hard_limit = 800
     soft_limit = 500
 
-  # 服務健康檢查（定期探測 /health endpoint）
   [[http_service.checks]]
-    grace_period = "10s"
-    interval = "30s"
-    method = "GET"
-    timeout = "5s"
-    path = "/health"
+    interval = '30s'
+    timeout = '5s'
+    grace_period = '10s'
+    method = 'GET'
+    path = '/health'
 
-# ==============================================================================
-# 運算資源配置：鎖定最小規格 shared-cpu-1x (256MB)
-# 單台 24/7 運行月費約 $1.94 USD，完全落在 Fly.io 每月未滿 $5 美元直接豁免之門檻內 ($0)
-# ==============================================================================
 [[vm]]
-  cpu_kind = "shared"
+  memory = '256mb'
+  cpu_kind = 'shared'
   cpus = 1
-  memory = "256mb"
-
-# ------------------------------------------------------------------------------
-# ⚠️ 注意事項（DevOps 安全指引）：
-# 1. 嚴禁在此加入 [mounts] 區塊（Volume 需額外持續計費，無法被小額豁免）。
-# 2. 嚴禁在 [env] 中加入密鑰，如需設定環境變數，請在終端機執行：
-#    fly secrets set CORS_ORIGIN="*" LOG_LEVEL="info"
-# 3. 部署時必須附帶 --ha=false 旗標：
-#    fly deploy --remote-only --ha=false
-# ------------------------------------------------------------------------------
+  memory_mb = 256
