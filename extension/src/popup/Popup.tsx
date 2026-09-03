@@ -88,12 +88,17 @@ export default function Popup() {
 
     let targetServerUrl = DEFAULT_SERVER_URL;
     if (connectionMode === 'CUSTOM_IP') {
-      if (!customServerUrl.trim()) {
-        setErrorMessage('請輸入自架伺服器 IP 或網址 (例如: http://192.168.1.100:3000)');
+      let input = customServerUrl.trim();
+      if (!input) {
+        setErrorMessage('請輸入自架伺服器網址 (例如: https://coview.fly.dev 或 http://192.168.1.100:3000)');
         setLoading(false);
         return;
       }
-      targetServerUrl = customServerUrl.trim();
+      // 自動補齊協定，若為 localhost 補 http://，否則一律自動補上 https://
+      if (!input.startsWith('http://') && !input.startsWith('https://')) {
+        input = (input.includes('localhost') || input.includes('127.0.0.1') ? 'http://' : 'https://') + input;
+      }
+      targetServerUrl = input;
     }
 
     chrome.runtime.sendMessage(
@@ -412,7 +417,7 @@ export default function Popup() {
                     </label>
                     <input
                       type="text"
-                      placeholder="例如: https://coview.example.com 或 http://192.168.1.100:3000"
+                      placeholder="例如: https://coview.fly.dev 或 http://192.168.1.100:3000"
                       value={customServerUrl}
                       onChange={(e) => setCustomServerUrl(e.target.value)}
                       className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:border-blue-500 transition"
