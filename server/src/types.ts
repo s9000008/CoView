@@ -1,6 +1,6 @@
 export type ConnectionMode = 'DEFAULT' | 'CUSTOM_IP' | 'P2P';
 
-export type CoViewEvent = 
+export type SyncineEvent = 
   | 'CREATE_ROOM' 
   | 'CREATE_ROOM_SUCCESS' 
   | 'JOIN_ROOM' 
@@ -15,11 +15,15 @@ export type CoViewEvent =
   | 'P2P_FALLBACK'
   | 'ERROR';
 
-export interface CoViewPayload {
-  event: CoViewEvent;
+export type CoViewEvent = SyncineEvent;
+
+export interface SyncinePayload {
+  event: SyncineEvent;
   roomId?: string;
   data?: any;
 }
+
+export type CoViewPayload = SyncinePayload;
 
 export interface CreateRoomReq {
   event: 'CREATE_ROOM';

@@ -90,7 +90,7 @@ export default function Popup() {
     if (connectionMode === 'CUSTOM_IP') {
       let input = customServerUrl.trim();
       if (!input) {
-        setErrorMessage('請輸入自架伺服器網址 (例如: https://coview.fly.dev 或 http://192.168.1.100:3000)');
+        setErrorMessage('請輸入自架伺服器網址 (例如: https://syncine.fly.dev 或 http://192.168.1.100:3000)');
         setLoading(false);
         return;
       }
@@ -231,7 +231,7 @@ export default function Popup() {
             <div>
               <div className="flex items-center gap-1.5">
                 <h1 className="font-bold text-base tracking-wide bg-gradient-to-r from-emerald-400 via-teal-300 to-sky-300 bg-clip-text text-transparent">
-                  CoView (同映)
+                  Syncine (同映)
                 </h1>
                 <span className="px-1.5 py-0.5 text-[9px] font-semibold rounded bg-slate-800 text-slate-300 border border-slate-700">
                   v2.4
@@ -417,7 +417,7 @@ export default function Popup() {
                     </label>
                     <input
                       type="text"
-                      placeholder="例如: https://coview.fly.dev 或 http://192.168.1.100:3000"
+                      placeholder="例如: https://syncine.fly.dev 或 http://192.168.1.100:3000"
                       value={customServerUrl}
                       onChange={(e) => setCustomServerUrl(e.target.value)}
                       className="w-full bg-slate-900 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:border-blue-500 transition"
@@ -655,7 +655,7 @@ export default function Popup() {
 
       {/* 底部 Footer */}
       <div className="mt-4 pt-2.5 border-t border-slate-800/80 text-center text-[10px] text-slate-500 flex items-center justify-between">
-        <span>CoView Engine • 支援 YouTube / Bilibili</span>
+        <span>Syncine Engine • 支援 YouTube / Bilibili</span>
         <span className="font-mono text-emerald-400 font-semibold">WebRTC P2P Direct</span>
       </div>
     </div>

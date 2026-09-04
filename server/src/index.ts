@@ -27,7 +27,7 @@ app.use(express.json());
 
 // 健康檢查 Endpoint
 app.get('/health', (_req, res) => {
-  res.json({ status: 'ok', service: 'CoView Socket Server', version: '2.0.0' });
+  res.json({ status: 'ok', service: 'Syncine Socket Server', version: '2.0.0' });
 });
 
 const server = http.createServer(app);
@@ -264,7 +264,7 @@ server.on('error', (err: any) => {
 
 server.listen(PORT, () => {
   console.log(`================================================`);
-  console.log(`🚀 CoView WebSocket Server 啟動於 http://localhost:${PORT}`);
+  console.log(`🚀 Syncine WebSocket Server 啟動於 http://localhost:${PORT}`);
   console.log(`================================================`);
 });
 

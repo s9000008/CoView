@@ -15,11 +15,14 @@ let currentRoomState: RoomStateInfo | null = null;
 let userId: string = 'user_' + Math.random().toString(36).substring(2, 9);
 
 // 在 Chrome MV3 Service Worker 中使用 chrome.storage.local 代替 localStorage
-chrome.storage?.local?.get(['coview_user_id'], (result) => {
-  if (result?.coview_user_id) {
+chrome.storage?.local?.get(['syncine_user_id', 'coview_user_id'], (result) => {
+  if (result?.syncine_user_id) {
+    userId = result.syncine_user_id;
+  } else if (result?.coview_user_id) {
     userId = result.coview_user_id;
+    chrome.storage?.local?.set({ syncine_user_id: userId });
   } else {
-    chrome.storage?.local?.set({ coview_user_id: userId });
+    chrome.storage?.local?.set({ syncine_user_id: userId });
   }
 });
 
@@ -27,7 +30,7 @@ chrome.storage?.local?.get(['coview_user_id'], (result) => {
 // 1. MV3 保活機制 (Keep-Alive)
 // ----------------------------------------------------
 chrome.runtime.onConnect.addListener((port) => {
-  if (port.name === 'coview-keepalive') {
+  if (port.name === 'syncine-keepalive' || port.name === 'coview-keepalive') {
     console.log('[Background] 收到 Content Script 長連接保活 Port');
     port.onDisconnect.addListener(() => {
       console.log('[Background] Content Script Port 斷開');
@@ -35,9 +38,9 @@ chrome.runtime.onConnect.addListener((port) => {
   }
 });
 
-chrome.alarms.create('coview-ping-alarm', { periodInMinutes: 0.33 });
+chrome.alarms.create('syncine-ping-alarm', { periodInMinutes: 0.33 });
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === 'coview-ping-alarm') {
+  if (alarm.name === 'syncine-ping-alarm' || alarm.name === 'coview-ping-alarm') {
     if (socket && socket.connected) {
       socket.emit('PING_ALIVE', { timestamp: Date.now() });
       console.log('[Background Keep-Alive] 發送 Alarm 輕量 Ping');
@@ -64,7 +67,7 @@ async function ensureOffscreenDocument() {
       creatingOffscreen = (chrome as any).offscreen.createDocument({
         url: offscreenUrl,
         reasons: [(chrome as any).offscreen.Reason.WEB_RTC],
-        justification: 'WebRTC P2P DataChannel connection for CoView sync'
+        justification: 'WebRTC P2P DataChannel connection for Syncine sync'
       });
       await creatingOffscreen;
       creatingOffscreen = null;
@@ -104,7 +107,7 @@ function verifyAndRedirect(targetUrl: string) {
       }
     });
   } else {
-    console.error(`[CoView 資安警告] 攔截非白名單跳轉網址: ${targetUrl}`);
+    console.error(`[Syncine 資安警告] 攔截非白名單跳轉網址: ${targetUrl}`);
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
       if (tabs[0]?.id) {
         chrome.tabs.sendMessage(tabs[0].id, {

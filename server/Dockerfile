@@ -1,5 +1,5 @@
 # ==============================================================================
-# CoView Server - Multi-Stage Security-Hardened Dockerfile
+# Syncine Server - Multi-Stage Security-Hardened Dockerfile
 # 針對 256MB 記憶體上限優化、非 root 使用者、dumb-init 訊號優雅轉發
 # ==============================================================================
 

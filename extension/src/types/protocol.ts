@@ -2,7 +2,7 @@ export type ConnectionMode = 'DEFAULT' | 'CUSTOM_IP' | 'P2P';
 
 export type P2PStatus = 'DISCONNECTED' | 'CONNECTING' | 'CONNECTED' | 'FALLBACK';
 
-export type CoViewEvent = 
+export type SyncineEvent = 
   | 'CREATE_ROOM' 
   | 'CREATE_ROOM_SUCCESS' 
   | 'JOIN_ROOM' 
@@ -18,6 +18,8 @@ export type CoViewEvent =
   | 'GET_ROOM_MEMBER_COUNT'
   | 'MEMBER_COUNT_UPDATED'
   | 'ERROR';
+
+export type CoViewEvent = SyncineEvent;
 
 export interface SyncData {
   action: 'PLAY' | 'PAUSE' | 'SEEK' | 'HEARTBEAT';

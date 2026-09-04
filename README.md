@@ -1,12 +1,12 @@
-# CoView (同映) - 跨平台網頁影片同步播放系統
+# Syncine (同映) - 跨平台網頁影片同步播放系統
 
-![CoView Banner](https://img.shields.io/badge/Manifest_V3-Chrome_Extension-3b82f6?style=for-the-badge&logo=googlechrome)
+![Syncine Banner](https://img.shields.io/badge/Manifest_V3-Chrome_Extension-3b82f6?style=for-the-badge&logo=googlechrome)
 ![Socket.IO](https://img.shields.io/badge/Socket.io-4.7-010101?style=for-the-badge&logo=socketdotio)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5.4-3178c6?style=for-the-badge&logo=typescript)
 ![React](https://img.shields.io/badge/React-18.3-61dafb?style=for-the-badge&logo=react)
 ![TailwindCSS](https://img.shields.io/badge/Tailwind_CSS-3.4-06b6d4?style=for-the-badge&logo=tailwindcss)
 
-> **CoView (同映)** 是一款專為跨地理位置、跨平台網頁設計的即時低延遲影片同步播放系統。結合 Chrome Extension Manifest V3 擴充套件與 Node.js + Socket.IO 高效能架構，讓您與好友無論身在何處都能同步觀看 YouTube 與 Bilibili 影片。
+> **Syncine (同映)** 是一款專為跨地理位置、跨平台網頁設計的即時低延遲影片同步播放系統。結合 Chrome Extension Manifest V3 擴充套件與 Node.js + Socket.IO 高效能架構，讓您與好友無論身在何處都能同步觀看 YouTube 與 Bilibili 影片。
 
 ---
 
@@ -29,11 +29,11 @@
 ## 📁 專案架構
 
 ```text
-CoView/
+Syncine/
 ├── .env.example             # 專案環境變數範例檔
 ├── .gitignore                # 版控排除清單
 ├── README.md                 # 專案完整說明文件
-├── CoView_System_Specification.md # 系統規格書 (v2.2)
+├── Syncine_System_Specification.md # 系統規格書 (v2.3)
 │
 ├── server/                   # WebSocket 後端伺服器 (Node.js + Express + Socket.IO)
 │   ├── src/
@@ -120,7 +120,7 @@ npm run build
 1. 開啟 Chrome 瀏覽器，進入 `chrome://extensions/`。
 2. 開啟右上角 **「開發者模式」 (Developer mode)**。
 3. 點擊 **「載入未打包擴充套件」 (Load unpacked)**。
-4. 選擇 `CoView/extension/dist` 資料夾即可完成載入！
+4. 選擇 `extension/dist` (或 `Syncine/extension/dist`) 資料夾即可完成載入！
 
 ---
 
@@ -145,7 +145,7 @@ CMD ["node", "dist/index.js"]
 您可以在專案中建立 `.github/workflows/deploy.yml` 實現自動化測試與 GitHub Pages / Releases 發布：
 
 ```yaml
-name: CoView CI/CD Pipeline
+name: Syncine CI/CD Pipeline
 
 on:
   push:
@@ -177,7 +177,7 @@ jobs:
       - name: Archive Extension Build Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: coview-extension-build
+          name: syncine-extension-build
           path: extension/dist/
 ```
 

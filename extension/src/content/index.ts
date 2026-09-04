@@ -1,18 +1,18 @@
 import { SyncData, getVideoIdentifier } from '../types/protocol';
 
-console.log('[CoView ContentScript] 腳本已載入 (Frame:', window.self === window.top ? 'Main Window' : 'Iframe', ')');
+console.log('[Syncine ContentScript] 腳本已載入 (Frame:', window.self === window.top ? 'Main Window' : 'Iframe', ')');
 
 // ----------------------------------------------------
 // 1. MV3 長連接 Port 保活
 // ----------------------------------------------------
 let keepAlivePort: chrome.runtime.Port | null = null;
 try {
-  keepAlivePort = chrome.runtime.connect({ name: 'coview-keepalive' });
+  keepAlivePort = chrome.runtime.connect({ name: 'syncine-keepalive' });
   keepAlivePort.onDisconnect.addListener(() => {
-    console.log('[CoView ContentScript] Keep-Alive Port 斷開，試圖重新連線...');
+    console.log('[Syncine ContentScript] Keep-Alive Port 斷開，試圖重新連線...');
   });
 } catch (e) {
-  console.warn('[CoView] 建立 Keep-Alive Port 失敗:', e);
+  console.warn('[Syncine] 建立 Keep-Alive Port 失敗:', e);
 }
 
 // ----------------------------------------------------
@@ -92,7 +92,7 @@ function startHeartbeat() {
 
     // 核心防護：若本分頁已非房間當前影片，自我靜音並停止心跳，徹底根絕時間軸干擾
     if (!isCurrentActiveVideoTab()) {
-      console.log('[CoView Heartbeat] 偵測到本分頁影片已過期 (非當前房間目標影片)，自動靜音心跳');
+      console.log('[Syncine Heartbeat] 偵測到本分頁影片已過期 (非當前房間目標影片)，自動靜音心跳');
       stopHeartbeat();
       return;
     }
@@ -125,12 +125,12 @@ function applySyncState(data: SyncData) {
   if (!targetVideo || !roomState.isInRoom) return;
   // 觀眾端防護：若自身尚未處於目標影片，不套用時間軸校準，避免分頁未跳轉前時間跳動
   if (!isCurrentActiveVideoTab()) {
-    console.log('[CoView] 當前分頁影片與房間目標不符，略過時間軸同步');
+    console.log('[Syncine] 當前分頁影片與房間目標不符，略過時間軸同步');
     return;
   }
 
   if (isYouTubeAdPlaying()) {
-    console.log('[CoView] 廣告播放中，忽略同步事件');
+    console.log('[Syncine] 廣告播放中，忽略同步事件');
     return;
   }
 
@@ -153,7 +153,7 @@ function applySyncState(data: SyncData) {
       targetVideo.currentTime = targetServerTime;
     }
     if (targetVideo.paused) {
-      targetVideo.play().catch((err) => console.log('[CoView Play Intercepted]:', err));
+      targetVideo.play().catch((err) => console.log('[Syncine Play Intercepted]:', err));
     }
   } else if (action === 'PAUSE') {
     // 暫停時若時間差距小於 0.5 秒直接 pause，不強制 seek，消除播放器暫停時的畫面閃爍與誤判卡頓
@@ -167,27 +167,27 @@ function applySyncState(data: SyncData) {
 
     // 同步發送端的播放狀態：若發送端在播放，全員跟隨播放；若發送端在暫停，全員跟隨暫停
     if (serverPaused === false) {
-      console.log('[CoView Seek] 發送端正在播放，接收端跟隨同步播放');
-      targetVideo.play().catch((err) => console.log('[CoView Seek Play Intercepted]:', err));
+      console.log('[Syncine Seek] 發送端正在播放，接收端跟隨同步播放');
+      targetVideo.play().catch((err) => console.log('[Syncine Seek Play Intercepted]:', err));
     } else if (serverPaused === true) {
-      console.log('[CoView Seek] 發送端處於暫停，接收端跟隨暫停');
+      console.log('[Syncine Seek] 發送端處於暫停，接收端跟隨暫停');
       targetVideo.pause();
     }
   } else if (action === 'HEARTBEAT') {
     // 1. 雙向校準播放狀態
     if (typeof serverPaused === 'boolean') {
       if (serverPaused && !targetVideo.paused) {
-        console.log('[CoView Heartbeat] 主機目前為暫停，觀眾對齊暫停');
+        console.log('[Syncine Heartbeat] 主機目前為暫停，觀眾對齊暫停');
         targetVideo.pause();
       } else if (!serverPaused && targetVideo.paused) {
-        console.log('[CoView Heartbeat] 主機目前為播放，觀眾對齊播放');
+        console.log('[Syncine Heartbeat] 主機目前為播放，觀眾對齊播放');
         targetVideo.play().catch(() => {});
       }
     }
 
     // 2. 被動心跳 5 秒容差檢查 (在暫停或非必要狀態下不隨意位移)
     if (timeDiff > 5) {
-      console.log(`[CoView Heartbeat] 時間差為 ${timeDiff.toFixed(2)} 秒 (>5秒)，強制同步位移至: ${targetServerTime}`);
+      console.log(`[Syncine Heartbeat] 時間差為 ${timeDiff.toFixed(2)} 秒 (>5秒)，強制同步位移至: ${targetServerTime}`);
       targetVideo.currentTime = targetServerTime;
     }
   }
@@ -197,11 +197,11 @@ function applySyncState(data: SyncData) {
 // 6. 綁定 Video DOM 事件監聽
 // ----------------------------------------------------
 function attachVideoListeners(video: HTMLVideoElement) {
-  if ((video as any).__coview_attached) return;
-  (video as any).__coview_attached = true;
+  if ((video as any).__syncine_attached || (video as any).__coview_attached) return;
+  (video as any).__syncine_attached = true;
   targetVideo = video;
 
-  console.log('[CoView] 成功綁定 Target Video DOM');
+  console.log('[Syncine] 成功綁定 Target Video DOM');
 
   video.addEventListener('play', () => {
     // 未在房間內，徹底放行使用者原生播放！
@@ -211,7 +211,7 @@ function attachVideoListeners(video: HTMLVideoElement) {
     if (isProgrammatic() || isYouTubeAdPlaying()) return;
 
     if (!roomState.isHost && !roomState.allowGuestControl) {
-      console.warn('[CoView Intercept] 觀眾無權限發起播放，回滾狀態');
+      console.warn('[Syncine Intercept] 觀眾無權限發起播放，回滾狀態');
       markProgrammatic(400);
       video.pause();
       return;
@@ -236,7 +236,7 @@ function attachVideoListeners(video: HTMLVideoElement) {
     if (isProgrammatic() || isYouTubeAdPlaying()) return;
 
     if (!roomState.isHost && !roomState.allowGuestControl) {
-      console.warn('[CoView Intercept] 觀眾無權限發起暫停，回滾狀態');
+      console.warn('[Syncine Intercept] 觀眾無權限發起暫停，回滾狀態');
       markProgrammatic(400);
       video.play().catch(() => {});
       return;
@@ -312,7 +312,7 @@ function attachVideoListeners(video: HTMLVideoElement) {
     if (bufferingTimer) clearTimeout(bufferingTimer);
     bufferingTimer = setTimeout(() => {
       if (!video.paused && !isProgrammatic()) {
-        console.log('[CoView] 偵測到嚴重網路卡頓 (>5s)，廣播全房暫停');
+        console.log('[Syncine] 偵測到嚴重網路卡頓 (>5s)，廣播全房暫停');
         chrome.runtime.sendMessage({
           type: 'BG_SYNC_STATE',
           data: {
@@ -362,7 +362,7 @@ function initObserver() {
 
 // YouTube SPA 切換影片事件
 window.addEventListener('yt-navigate-finish', () => {
-  console.log('[CoView] 偵測到 YouTube SPA 網頁導航切換');
+  console.log('[Syncine] 偵測到 YouTube SPA 網頁導航切換');
   setTimeout(() => {
     initObserver();
     if (roomState.isInRoom && roomState.isHost) {
@@ -409,7 +409,7 @@ chrome.runtime.onMessage.addListener((request) => {
         allowGuestControl: payload.allowGuestControl,
         currentUrl: payload.currentUrl
       };
-      console.log('[CoView] 房間狀態即時更新 (已在房間中):', roomState);
+      console.log('[Syncine] 房間狀態即時更新 (已在房間中):', roomState);
       if (roomState.isHost && isCurrentActiveVideoTab()) {
         startHeartbeat();
       } else {
@@ -418,12 +418,12 @@ chrome.runtime.onMessage.addListener((request) => {
     } else {
       roomState = { isInRoom: false, isHost: false, allowGuestControl: false };
       stopHeartbeat();
-      console.log('[CoView] 已退出房間，完全釋放播放器控制權限');
+      console.log('[Syncine] 已退出房間，完全釋放播放器控制權限');
     }
   } else if (type === 'CS_REQUEST_CURRENT_STATE') {
     // 規格 4.1 Host 被要求回報狀態給新進人員 (僅當前影片分頁允許回報)
     if (targetVideo && roomState.isHost && isCurrentActiveVideoTab()) {
-      console.log('[CoView Host] 回報最新影片狀態給新進成員 Socket:', payload.targetGuestSocketId);
+      console.log('[Syncine Host] 回報最新影片狀態給新進成員 Socket:', payload.targetGuestSocketId);
       chrome.runtime.sendMessage({
         type: 'BG_SYNC_STATE',
         targetGuestSocketId: payload.targetGuestSocketId,
@@ -436,9 +436,9 @@ chrome.runtime.onMessage.addListener((request) => {
     }
   } else if (type === 'CS_PERMISSION_UPDATED') {
     roomState.allowGuestControl = payload.allowGuestControl;
-    console.log('[CoView] 觀眾權限狀態更新:', roomState.allowGuestControl);
+    console.log('[Syncine] 觀眾權限狀態更新:', roomState.allowGuestControl);
   } else if (type === 'SHOW_SECURITY_ALERT') {
-    alert(`【CoView 安全警告】房主嘗試將您導向未授權的網址 (${payload.url})，系統已自動攔截！`);
+    alert(`【Syncine 安全警告】房主嘗試將您導向未授權的網址 (${payload.url})，系統已自動攔截！`);
   }
 });
 

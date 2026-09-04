@@ -1,5 +1,5 @@
 /**
- * CoView 前端環境設定檔
+ * Syncine 前端環境設定檔
  * 支援依不同環境 (Local 開發 / Production 正式發布) 讀取 VITE_DEFAULT_SERVER_URL
  */
 export const DEFAULT_SERVER_URL: string =

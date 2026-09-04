@@ -1,4 +1,4 @@
-# CoView (同映) - 跨平台網頁影片同步播放系統完整開發規格書 (v2.3)
+# Syncine (同映) - 跨平台網頁影片同步播放系統完整開發規格書 (v2.3)
 
 > **環境與用途說明**：本文件專為 **Google Antigravity** 及 AI 開發助理設計。內含三模彈性連線架構（預設官方中繼 / 自架 IP 模式 / WebRTC P2P 直連）、核心同步演算法、MV3 Offscreen 載體、保活防禦、邊界條件、WebSocket 通訊協定（Type Definitions）以及未來預期功能規劃。請嚴格依據此規格書進行前後端程式碼生成與維護。
 
@@ -52,7 +52,7 @@
 
 ```text
 ┌────────────────────────────────────────────────────────────────────────┐
-│                        CoView 核心連線選項                             │
+│                        Syncine 核心連線選項                            │
 ├───────────────────────────────────┬────────────────────────────────────┤
 │ 1. 預設連線模式 (Default Relay)   │ 2. 自行輸入 IP (Self-Hosted IP)    │
 ├───────────────────────────────────┼────────────────────────────────────┤
@@ -63,14 +63,14 @@
 
 ### 3.1 選項一：預設連線模式 (Default Relay Mode)
 * **定位**：適合一般大眾使用者，開箱即用、零配置。
-* **連線端點**：套件預設連線至伺服器（本地端為 `http://localhost:3000`，生產環境為官方託管端點 `https://api.coview-official.com`）。
+* **連線端點**：套件預設連線至伺服器（本地端為 `http://localhost:3000`，生產環境為官方託管端點 `https://api.syncine-official.com`）。
 * **傳輸機制**：WebSocket (Socket.IO) 集中式房間中繼轉發。
 * **房間代碼**：標準 6 碼代碼（如 `X7A9B2`）或含前綴之 `DEF:X7A9B2`。
 * **優點**：無需任何額外配置，即使處於嚴格 NAT 或行動網路皆可順暢連線。
 
 ### 3.2 選項二：自行輸入 IP 模式 (Custom IP / Self-Hosted Mode)
 * **定位**：適合自架愛好者、內部區域網路（LAN）、私有雲 VPS 或 NAS 使用者。
-* **連線端點**：房主在建立房間時，控制面板 UI 提供「自訂伺服器網址/IP」輸入欄位（例如：`http://192.168.1.100:3000` 或 `https://coview.myhome.net:8443`）。
+* **連線端點**：房主在建立房間時，控制面板 UI 提供「自訂伺服器網址/IP」輸入欄位（例如：`http://192.168.1.100:3000` 或 `https://syncine.myhome.net:8443`）。
 * **複合型分享碼無感對接機制**：
   1. 房主在自訂伺服器建房成功後，套件將「6 碼 Room ID」與「Base64 編碼後的自訂伺服器網址」透過管道符號 `|` 組裝成最終分享碼：
      - *格式*：`IP:RoomID|Base64(ServerURL)` 或相容格式 `RoomID|Base64(ServerURL)`
@@ -138,7 +138,7 @@ if (timeDiff > 5) {
     video.currentTime = targetServerTime;
 } else {
     // 差距在 5 秒內（含5秒），視為合理網路抖動，不做干預，確保畫面流暢不卡頓
-    console.log(`[CoView] 延遲補償後時間差為 ${timeDiff} 秒，在容差範圍內，忽略同步。`);
+    console.log(`[Syncine] 延遲補償後時間差為 ${timeDiff} 秒，在容差範圍內，忽略同步。`);
 }
 ```
 
@@ -163,7 +163,7 @@ function verifyAndRedirect(targetUrl) {
         chrome.tabs.update({ url: targetUrl });
     } else {
         console.error("【安全警告】自動攔截未授權的外部跳轉網址！");
-        alert("【CoView 安全警告】房主嘗試將您導向未授權的網址，系統已自動攔截！");
+        alert("【Syncine 安全警告】房主嘗試將您導向未授權的網址，系統已自動攔截！");
     }
 }
 ```
@@ -182,7 +182,7 @@ function verifyAndRedirect(targetUrl) {
 
 由於 Chrome Manifest V3 的 Background Service Worker 會在不活動 30 秒後自動休眠，導致長連接中斷，AI 實作時必須包含以下**保活機制**：
 
-1. **Port 長連接保活**：當任何支援的影片網頁開啟且套件啟用時，Content Script 必須與 Background Script 建立 `chrome.runtime.connect({ name: "coview-keepalive" })` 通道。只要此通道維持開啟狀態，Service Worker 就不會進入休眠。
+1. **Port 長連接保活**：當任何支援的影片網頁開啟且套件啟用時，Content Script 必須與 Background Script 建立 `chrome.runtime.connect({ name: "syncine-keepalive" })` 通道。只要此通道維持開啟狀態，Service Worker 就不會進入休眠。
 2. **Alarm 喚醒備援**：Background Script 必須註冊一個每 20 秒執行一次的 `chrome.alarms` 監聽器。每次觸發時，向連線端點發送輕量心跳（Ping/Pong），強制重新整理生命週期。
 
 ---
@@ -211,7 +211,7 @@ AI 在編寫 Content Script 時，請針對當前核心支援平台採用以下�
 // 連線模式列舉
 export type ConnectionMode = 'DEFAULT' | 'CUSTOM_IP';
 
-export type CoViewEvent = 
+export type SyncineEvent = 
   | 'CREATE_ROOM' 
   | 'CREATE_ROOM_SUCCESS' 
   | 'JOIN_ROOM' 
@@ -222,8 +222,8 @@ export type CoViewEvent =
   | 'TOGGLE_PERMISSION' 
   | 'ERROR';
 
-export interface CoViewPayload<T = any> {
-  event: CoViewEvent;
+export interface SyncinePayload<T = any> {
+  event: SyncineEvent;
   roomId?: string;
   data?: T;
 }

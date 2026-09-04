@@ -1,4 +1,4 @@
-name: CI/CD - Deploy CoView Server to Fly.io
+name: CI/CD - Deploy Syncine Server to Fly.io
 
 # 觸發條件：當 main 分支有更新，且變更範圍包含 server/ 或本 workflow 時自動執行
 on:

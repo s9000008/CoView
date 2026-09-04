@@ -1,7 +1,7 @@
 {
-  "name": "coview-extension",
+  "name": "syncine-extension",
   "version": "2.0.0",
-  "description": "CoView - Cross-platform video sync Chrome Extension",
+  "description": "Syncine - Cross-platform video sync Chrome Extension",
   "type": "module",
   "scripts": {
     "dev": "vite",

@@ -1,7 +1,7 @@
 import { Peer, DataConnection } from 'peerjs';
 import { P2PStatus, ExtensionMessage, JoinRequest } from '../types/protocol';
 
-console.log('[CoView Offscreen] WebRTC Offscreen Document (PeerJS Engine) 已啟動');
+console.log('[Syncine Offscreen] WebRTC Offscreen Document (PeerJS Engine) 已啟動');
 
 const PEER_CONFIG = {
   config: {
@@ -51,7 +51,7 @@ class PeerJSWebRTCManager {
         // 1. 探測並剔除已關閉的非活躍連線
         this.activeConnections.forEach((conn, peerId) => {
           if (!conn.open) {
-            console.log(`[CoView 30s Heartbeat] 偵測到成員 ${peerId} 通道已失效，自動剔除`);
+            console.log(`[Syncine 30s Heartbeat] 偵測到成員 ${peerId} 通道已失效，自動剔除`);
             try {
               conn.close();
             } catch (e) {}
@@ -61,7 +61,7 @@ class PeerJSWebRTCManager {
         });
 
         const activeCount = this.getConnectedPeerCount();
-        console.log(`[CoView 30s Heartbeat] 房主發起全房人數校準，當前在線人數: ${activeCount} 人`);
+        console.log(`[Syncine 30s Heartbeat] 房主發起全房人數校準，當前在線人數: ${activeCount} 人`);
 
         // 2. 廣播最新人數給所有在線觀眾
         this.activeConnections.forEach((conn) => {
@@ -134,13 +134,13 @@ class PeerJSWebRTCManager {
       const roomId = Math.random().toString(36).substring(2, 8).toUpperCase();
       this.roomId = roomId;
 
-      console.log(`[CoView P2P Host] 正在向信令網路註冊房間 ID: ${roomId}...`);
-      const peerId = `coview-${roomId}`;
+      console.log(`[Syncine P2P Host] 正在向信令網路註冊房間 ID: ${roomId}...`);
+      const peerId = `syncine-${roomId}`;
       const peer = new Peer(peerId, PEER_CONFIG);
       this.peer = peer;
 
       peer.on('open', (id) => {
-        console.log(`[CoView P2P Host] 🎉 房間建立成功！房間代碼: ${roomId} (PeerID: ${id})`);
+        console.log(`[Syncine P2P Host] 🎉 房間建立成功！房間代碼: ${roomId} (PeerID: ${id})`);
         this.updateStatus('CONNECTED');
         resolve({ roomId });
       });
@@ -148,14 +148,14 @@ class PeerJSWebRTCManager {
       peer.on('connection', (conn: DataConnection) => {
         const requestId = conn.peer;
         const guestName = conn.metadata?.guestName || `訪客 (${requestId.slice(-4)})`;
-        console.log(`[CoView P2P Host] 收到新成員入房申請: ${guestName} (${requestId})`);
+        console.log(`[Syncine P2P Host] 收到新成員入房申請: ${guestName} (${requestId})`);
 
         this.pendingRequests.set(requestId, conn);
         this.notifyJoinRequestsChanged();
 
         // 綁定連線狀態事件
         conn.on('open', () => {
-          console.log(`[CoView P2P Host] 與成員 ${requestId} 之 DataChannel 已成功 open (open=${conn.open})`);
+          console.log(`[Syncine P2P Host] 與成員 ${requestId} 之 DataChannel 已成功 open (open=${conn.open})`);
           // 若房主已預先核准，立即補發核准訊息
           if (this.approvedRequestIds.has(requestId)) {
             this.sendApprovalSignal(conn, requestId);
@@ -166,14 +166,14 @@ class PeerJSWebRTCManager {
           // 若觀眾端送來狀態查詢請求且房主已批准，立即回送批准
           if (data?.type === 'GUEST_POLL_APPROVAL') {
             if (this.approvedRequestIds.has(requestId)) {
-              console.log(`[CoView P2P Host] 收到成員 ${requestId} 之核准狀態查詢，回送 JOIN_APPROVED`);
+              console.log(`[Syncine P2P Host] 收到成員 ${requestId} 之核准狀態查詢，回送 JOIN_APPROVED`);
               this.sendApprovalSignal(conn, requestId);
             }
           }
         });
 
         conn.on('close', () => {
-          console.log(`[CoView P2P Host] 成員連線關閉: ${requestId}`);
+          console.log(`[Syncine P2P Host] 成員連線關閉: ${requestId}`);
           this.pendingRequests.delete(requestId);
           this.activeConnections.delete(requestId);
           this.approvedRequestIds.delete(requestId);
@@ -182,12 +182,12 @@ class PeerJSWebRTCManager {
         });
 
         conn.on('error', (err) => {
-          console.error(`[CoView P2P Host] 成員 ${requestId} 連線異常:`, err);
+          console.error(`[Syncine P2P Host] 成員 ${requestId} 連線異常:`, err);
         });
       });
 
       peer.on('error', (err) => {
-        console.error('[CoView P2P Host] 信令伺服器錯誤:', err);
+        console.error('[Syncine P2P Host] 信令伺服器錯誤:', err);
         if (err.type === 'unavailable-id') {
           this.createRoom(userId).then(resolve).catch(reject);
         } else {
@@ -200,7 +200,7 @@ class PeerJSWebRTCManager {
   // 房主專屬：安全發送核准信號 (保證在通道 open 狀態下送達)
   private sendApprovalSignal(conn: DataConnection, requestId: string) {
     if (!conn.open) {
-      console.warn(`[CoView P2P Host] conn 尚未 open，暫緩發送核准信號: ${requestId}`);
+      console.warn(`[Syncine P2P Host] conn 尚未 open，暫緩發送核准信號: ${requestId}`);
       return;
     }
     try {
@@ -209,9 +209,9 @@ class PeerJSWebRTCManager {
         hostCurrentUrl: this.hostCurrentUrl,
         memberCount: this.getConnectedPeerCount()
       });
-      console.log(`[CoView P2P Host] 🎉 成功送達 JOIN_APPROVED 給成員: ${requestId}`);
+      console.log(`[Syncine P2P Host] 🎉 成功送達 JOIN_APPROVED 給成員: ${requestId}`);
     } catch (e) {
-      console.error('[CoView P2P Host] 發送 JOIN_APPROVED 失敗:', e);
+      console.error('[Syncine P2P Host] 發送 JOIN_APPROVED 失敗:', e);
     }
   }
 
@@ -224,7 +224,7 @@ class PeerJSWebRTCManager {
 
     const conn = this.pendingRequests.get(requestId) || this.activeConnections.get(requestId);
     if (!conn) {
-      console.warn(`[CoView P2P Host] 找不到對應的審核申請: ${requestId}`);
+      console.warn(`[Syncine P2P Host] 找不到對應的審核申請: ${requestId}`);
       return;
     }
 
@@ -239,7 +239,7 @@ class PeerJSWebRTCManager {
           return;
         }
 
-        console.log(`[CoView P2P Host] 收到來自成員 ${requestId} 之同步指令:`, data);
+        console.log(`[Syncine P2P Host] 收到來自成員 ${requestId} 之同步指令:`, data);
         chrome.runtime.sendMessage({
           type: 'OFFSCREEN_DATA_RECEIVED',
           payload: data
@@ -264,7 +264,7 @@ class PeerJSWebRTCManager {
     setTimeout(() => this.sendApprovalSignal(conn, requestId), 800);
     setTimeout(() => this.sendApprovalSignal(conn, requestId), 1500);
 
-    console.log(`[CoView P2P Host] ✅ 已核准成員 ${requestId} 入房！(目前人數: ${this.getConnectedPeerCount()} 人)`);
+    console.log(`[Syncine P2P Host] ✅ 已核准成員 ${requestId} 入房！(目前人數: ${this.getConnectedPeerCount()} 人)`);
     this.notifyJoinRequestsChanged();
     this.updateStatus('CONNECTED');
   }
@@ -280,7 +280,7 @@ class PeerJSWebRTCManager {
       setTimeout(() => conn.close(), 300);
     } catch (e) {}
 
-    console.log(`[CoView P2P Host] ❌ 已拒絕成員 ${requestId} 的入房申請`);
+    console.log(`[Syncine P2P Host] ❌ 已拒絕成員 ${requestId} 的入房申請`);
     this.notifyJoinRequestsChanged();
   }
 
@@ -299,8 +299,8 @@ class PeerJSWebRTCManager {
       this.peer = peer;
 
       peer.on('open', () => {
-        const targetHostPeerId = `coview-${this.roomId}`;
-        console.log(`[CoView P2P Guest] 正在向房主 ${targetHostPeerId} 送出入房申請...`);
+        const targetHostPeerId = `syncine-${this.roomId}`;
+        console.log(`[Syncine P2P Guest] 正在向房主 ${targetHostPeerId} 送出入房申請...`);
 
         const conn = peer.connect(targetHostPeerId, {
           metadata: {
@@ -312,7 +312,7 @@ class PeerJSWebRTCManager {
         this.guestConnection = conn;
 
         conn.on('open', () => {
-          console.log('[CoView P2P Guest] 通道已打通，等待房主確認核准中...');
+          console.log('[Syncine P2P Guest] 通道已打通，等待房主確認核准中...');
           // 主動告知房主通道已就緒並查詢核准狀態
           try {
             conn.send({ type: 'GUEST_POLL_APPROVAL' });
@@ -335,7 +335,7 @@ class PeerJSWebRTCManager {
 
         conn.on('data', (data: any) => {
           if (data?.type === 'JOIN_APPROVED') {
-            console.log('[CoView P2P Guest] 🎉 收到房主 JOIN_APPROVED 核准通知！立即解鎖開播');
+            console.log('[Syncine P2P Guest] 🎉 收到房主 JOIN_APPROVED 核准通知！立即解鎖開播');
             if (this.guestPollTimer) clearInterval(this.guestPollTimer);
             this.updateStatus('CONNECTED');
 
@@ -356,7 +356,7 @@ class PeerJSWebRTCManager {
               } as ExtensionMessage).catch(() => {});
             }
           } else if (data?.type === 'JOIN_REJECTED') {
-            console.warn('[CoView P2P Guest] 房主已婉拒您的加入申請');
+            console.warn('[Syncine P2P Guest] 房主已婉拒您的加入申請');
             if (this.guestPollTimer) clearInterval(this.guestPollTimer);
             this.close();
             chrome.runtime.sendMessage({
@@ -365,7 +365,7 @@ class PeerJSWebRTCManager {
             } as ExtensionMessage).catch(() => {});
             alert('房主已婉拒您的入房申請。');
           } else if (data?.type === 'MEMBER_COUNT_UPDATE') {
-            console.log(`[CoView P2P Guest] 收到 30 秒人數校準更新: ${data.count} 人`);
+            console.log(`[Syncine P2P Guest] 收到 30 秒人數校準更新: ${data.count} 人`);
             chrome.runtime.sendMessage({
               type: 'OFFSCREEN_P2P_STATUS',
               payload: {
@@ -383,18 +383,18 @@ class PeerJSWebRTCManager {
         });
 
         conn.on('close', () => {
-          console.log('[CoView P2P Guest] 與房主的連線已斷開');
+          console.log('[Syncine P2P Guest] 與房主的連線已斷開');
           if (this.guestPollTimer) clearInterval(this.guestPollTimer);
           this.updateStatus('DISCONNECTED');
         });
 
         conn.on('error', (err) => {
-          console.error('[CoView P2P Guest] 與房主連線異常:', err);
+          console.error('[Syncine P2P Guest] 與房主連線異常:', err);
         });
       });
 
       peer.on('error', (err) => {
-        console.error('[CoView P2P Guest] 信令連線失敗:', err);
+        console.error('[Syncine P2P Guest] 信令連線失敗:', err);
         this.updateStatus('DISCONNECTED');
         if (err.type === 'peer-unavailable') {
           reject(new Error('找不到該房間，請確認邀請碼是否正確，或房主是否仍在線上。'));

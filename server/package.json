@@ -1,7 +1,7 @@
 {
-  "name": "coview-server",
+  "name": "syncine-server",
   "version": "2.0.0",
-  "description": "CoView Video Sync WebSocket Server",
+  "description": "Syncine Video Sync WebSocket Server",
   "main": "dist/index.js",
   "scripts": {
     "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
@@ -9,12 +9,12 @@
     "start": "node dist/index.js"
   },
   "keywords": [
-    "coview",
+    "syncine",
     "sync-play",
     "websocket",
     "socket.io"
   ],
-  "author": "CoView Team",
+  "author": "Syncine Team",
   "license": "MIT",
   "dependencies": {
     "cors": "^2.8.5",
