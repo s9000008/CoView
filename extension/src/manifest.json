@@ -13,12 +13,9 @@
   "host_permissions": [
     "https://www.youtube.com/*",
     "https://www.bilibili.com/*",
+    "https://syncine.fly.dev/*",
     "http://localhost/*",
-    "http://127.0.0.1/*",
-    "ws://localhost/*",
-    "ws://127.0.0.1/*",
-    "http://*/*",
-    "https://*/*"
+    "http://127.0.0.1/*"
   ],
   "background": {
     "service_worker": "src/background/index.ts",
